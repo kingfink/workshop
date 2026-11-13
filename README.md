@@ -115,3 +115,13 @@ An issue has one of these at a time.
 | `workshop:waiting` | Waiting for the owner. The latest workshop comment says why. |
 
 A run that is killed before it can clean up, such as by a power cut, leaves the issue labelled `workshop:working`. Replace that label with `workshop:queued` to run it again.
+
+## Roadmap ideas
+
+### Update dependencies
+
+One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and successful runs without changes.
+
+### Jobs from telemetry
+
+Investigate failures from sources such as dbt, Modal or PostHog and propose deduplicated GitHub issues with evidence and a way to verify the fix. The owner queues them for the existing issue-to-PR flow. Start with one source and one reproducible failure class; confirm the result after deployment.
