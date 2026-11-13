@@ -134,3 +134,7 @@ Investigate failures from sources such as dbt, Modal or PostHog and propose dedu
 - Add a metric: implement a supplied business definition in the existing models or semantic layer.
 - Retire an unused model or source: check for consumers, remove it and clean up references.
 - Optimize a slow query: preserve results and demonstrate improvement under comparable conditions.
+
+### Verify content and analysis
+
+Check a report, dashboard, query or specified documents against named sources and explicit definitions. Identify conflicting statements, recalculate selected figures and flag unsupported claims. Mark each check as verified, contradicted or unable to verify, with evidence. Start with report numbers; these jobs need a successful report-only outcome.
