@@ -1,0 +1,9 @@
+# Two loaded columns fit the request: the skill says to ask.
+skills = ["add-field"]
+fixture = "dbt-duckdb"
+expect = "question"
+question = "offer both `email` and `contact_email` as options"
+
+[issue]
+title = "Add email to dim_customers"
+body = "Please add each customer's email address to `dim_customers` so we can send them a survey."

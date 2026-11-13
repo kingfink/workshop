@@ -1,0 +1,11 @@
+{
+  "env": {
+    "DBT_PROFILES_DIR": ".",
+    "DBT_SEND_ANONYMOUS_USAGE_STATS": "false"
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": ["~/.local/share/uv"]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+# The field is loaded, clean and has one obvious source column: the agent should change the models.
+skills = ["add-field"]
+fixture = "dbt-duckdb"
+expect = "pull-request"
+
+[add_columns]
+stg_customers = { plan_tier = "VARCHAR" }
+dim_customers = { plan_tier = "VARCHAR" }
+
+[issue]
+title = "Add plan tier to dim_customers"
+body = "We want to break customers down by plan. Please add a `plan_tier` column to `dim_customers`."
+
+[[queries]]
+sql = "select customer_id, plan_tier from main.dim_customers order by customer_id"
+rows = [[1, "pro"], [2, "free"], [3, "team"], [4, "free"], [5, "pro"], [6, "free"], [7, "team"], [8, "free"], [9, "pro"], [10, "free"], [11, "team"], [12, "pro"]]
+
+[[queries]]
+sql = "select customer_id, plan_tier from main.stg_customers order by customer_id"
+rows = [[1, "pro"], [2, "free"], [3, "team"], [4, "free"], [5, "pro"], [6, "free"], [7, "team"], [8, "free"], [9, "pro"], [10, "free"], [11, "team"], [12, "pro"]]

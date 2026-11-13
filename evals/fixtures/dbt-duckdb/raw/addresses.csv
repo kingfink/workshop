@@ -1,0 +1,13 @@
+customer_id,kind,city
+1,billing,Springfield
+1,shipping,Riverton
+2,billing,Lakeside
+3,billing,Hillview
+3,shipping,Hillview
+3,shipping,Brookfield
+5,billing,Fairview
+7,billing,Oakdale
+9,billing,Maplewood
+11,billing,Cedar Falls
+11,shipping,Pinecrest
+12,billing,Westfield

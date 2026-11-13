@@ -1,0 +1,9 @@
+# The source column mixes formats for one boolean: the skill says to ask how to clean it.
+skills = ["add-field"]
+fixture = "dbt-duckdb"
+expect = "question"
+question = "ask how to handle the mixed `is_vip` values, such as `Y`, `yes`, `1` and blanks"
+
+[issue]
+title = "Add VIP flag to dim_customers"
+body = "Account managers want to filter for VIP customers. Please add whether each customer is a VIP to `dim_customers`."

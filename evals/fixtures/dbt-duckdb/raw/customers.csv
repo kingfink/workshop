@@ -1,0 +1,13 @@
+customer_id,name,email,contact_email,plan_tier,signup_ts,is_vip,country
+1,Customer 01,c01@example.com,billing01@example.com,pro,2026-01-04 09:12:00,Y,US
+2,Customer 02,c02@example.com,c02@example.com,free,2026-01-09 14:30:00,N,GB
+3,Customer 03,c03@example.com,accounts03@example.com,team,2026-01-15 08:05:00,yes,US
+4,Customer 04,c04@example.com,,free,2026-02-01 17:44:00,,DE
+5,Customer 05,c05@example.com,finance05@example.com,pro,2026-02-11 11:20:00,1,US
+6,Customer 06,c06@example.com,c06@example.com,free,2026-02-20 10:00:00,N,FR
+7,Customer 07,c07@example.com,ops07@example.com,team,2026-03-02 13:15:00,true,GB
+8,Customer 08,c08@example.com,,free,2026-03-18 16:40:00,N,US
+9,Customer 09,c09@example.com,billing09@example.com,pro,2026-04-05 09:55:00,,CA
+10,Customer 10,c10@example.com,c10@example.com,free,2026-04-21 12:10:00,N,US
+11,Customer 11,c11@example.com,accounts11@example.com,team,2026-05-07 15:25:00,Y,DE
+12,Customer 12,c12@example.com,billing12@example.com,pro,2026-05-30 08:45:00,N,US

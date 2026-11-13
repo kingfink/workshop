@@ -1,0 +1,9 @@
+# No loaded table has the field, which the skill puts out of scope: the agent should ask, not invent a source.
+skills = ["add-field"]
+fixture = "dbt-duckdb"
+expect = "question"
+question = "say that no loaded table has a phone number"
+
+[issue]
+title = "Add phone number to dim_customers"
+body = "Support wants to call customers. Please add each customer's phone number to `dim_customers`."

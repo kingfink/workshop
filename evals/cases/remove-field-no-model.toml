@@ -1,0 +1,20 @@
+# The issue names no model: the skill says to remove the field from every model, but not from the sources.
+skills = ["remove-field"]
+fixture = "dbt-duckdb"
+expect = "pull-request"
+
+[remove_columns]
+stg_customers = ["country"]
+dim_customers = ["country"]
+
+[issue]
+title = "Stop exposing customer country"
+body = "We no longer need customers' country. Please remove it."
+
+[[queries]]
+sql = "select column_name from information_schema.columns where table_schema = 'main' and table_name = 'dim_customers' order by ordinal_position"
+rows = [["customer_id"], ["customer_name"], ["created_at"], ["order_count"], ["lifetime_value"]]
+
+[[queries]]
+sql = "select column_name from information_schema.columns where table_schema = 'main' and table_name = 'stg_customers' order by ordinal_position"
+rows = [["customer_id"], ["customer_name"], ["created_at"]]

@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Customers, one row each.
+    columns:
+      - name: customer_id
+        description: The customer's ID.
+        data_tests: [unique, not_null]
+      - name: customer_name
+        description: The customer's name.
+      - name: created_at
+        description: When the customer signed up.
+      - name: country
+        description: The customer's country, as an ISO 3166-1 alpha-2 code.
+  - name: stg_orders
+    description: Orders, one row each.
+    columns:
+      - name: order_id
+        description: The order's ID.
+        data_tests: [unique, not_null]
+      - name: customer_id
+        description: The customer who placed the order.
+        data_tests: [not_null]
+      - name: amount
+        description: The order total in US dollars.
+      - name: ordered_at
+        description: When the order was placed.

@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: customers
+        description: One row per customer, as exported from the billing system.
+      - name: orders
+        description: One row per order.
+      - name: addresses
+        description: A customer's billing and shipping addresses. A customer can have several of each.

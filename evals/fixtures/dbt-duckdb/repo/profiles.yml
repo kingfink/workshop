@@ -1,0 +1,7 @@
+fixture:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: fixture.duckdb
+      threads: 1
