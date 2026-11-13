@@ -22,9 +22,17 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
     monkeypatch.setenv("HOME", str(tmp_path))
     database = tmp_path / "raw.duckdb"
     database.write_text("")
-    monkeypatch.setattr(workshop_eval, "prepare_fixture", lambda name, work: workshop_eval.Fixture(
-        name, workshop_eval.EVALS_DIR / "fixtures" / name / "repo", tmp_path / "venv", database,
-        {"tables": {}, "tests": []}))
+    monkeypatch.setattr(
+        workshop_eval,
+        "prepare_fixture",
+        lambda name, work: workshop_eval.Fixture(
+            name,
+            workshop_eval.EVALS_DIR / "fixtures" / name / "repo",
+            tmp_path / "venv",
+            database,
+            {"tables": {}, "tests": []},
+        ),
+    )
     monkeypatch.setattr(workshop_eval, "prepare_agent_env", lambda worktree: None)
     builds = iter([(False, "Compilation Error in model dim_customers"), (True, "")])
     monkeypatch.setattr(workshop_eval, "dbt_build", lambda fixture, project: next(builds))
@@ -49,9 +57,24 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
                 extra(job.worktree)
             (job.handoff / "pull-request.md").write_text("Add plan_tier\n\nCloses #1\n")
             subprocess.run(["git", "-C", job.worktree, "add", "--all"], check=True)
-            subprocess.run(["git", "-C", job.worktree, "-c", "user.name=agent", "-c", "user.email=agent@localhost",
-                            "commit", "--quiet", "-m", "Change"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    job.worktree,
+                    "-c",
+                    "user.name=agent",
+                    "-c",
+                    "user.email=agent@localhost",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "Change",
+                ],
+                check=True,
+            )
         return 0
+
     monkeypatch.setattr(workshop, "invoke_agent", agent)
     return runs
 
@@ -78,10 +101,17 @@ def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
     assert "| add-field-plan-tier | 1 of 1 |" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("extra, why", [
-    (lambda worktree: (worktree / "dbt_project.yml").write_text("name: other\n"), "outside models/: dbt_project.yml"),
-    (lambda worktree: (worktree / "models" / "secret.sql").symlink_to("/etc/hosts"), "committed links"),
-], ids=["outside models", "link"])
+@pytest.mark.parametrize(
+    "extra, why",
+    [
+        (
+            lambda worktree: (worktree / "dbt_project.yml").write_text("name: other\n"),
+            "outside models/: dbt_project.yml",
+        ),
+        (lambda worktree: (worktree / "models" / "secret.sql").symlink_to("/etc/hosts"), "committed links"),
+    ],
+    ids=["outside models", "link"],
+)
 def test_eval_refuses_to_build(tmp_path, monkeypatch, extra, why):
     agent_that(tmp_path, monkeypatch, extra=extra)
     assert workshop.main(["eval", "--skill", "add-field"]) == 0

@@ -20,7 +20,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 - `git` and the GitHub CLI, authenticated (`gh auth login`, then `gh auth setup-git`).
 - Claude Code, logged in, where its [sandbox](https://code.claude.com/docs/en/sandboxing) can run. That page lists the platforms it supports and what each needs.
 - [GitHub's MCP server](https://github.com/github/github-mcp-server) as `github-mcp-server` on the `PATH`.
-- For `eval` only, [uv](https://docs.astral.sh/uv/).
+- For `eval` and development, [uv](https://docs.astral.sh/uv/).
 
 ## Commands
 
@@ -70,6 +70,18 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 | `--agent-timeout` | `900` | Seconds per agent run. |
 
 Each run's record goes in `~/.workshop/logs/evals.jsonl`, and its files in `~/.workshop/evals/runs/`.
+
+## Development
+
+Install the development tools with `uv sync --locked`. Their versions are recorded in `uv.lock`. Ruff formats Python code, sorts imports and checks for common mistakes.
+
+```bash
+uv run ruff check --fix .
+uv run ruff format .
+uv run python -m pytest -q
+```
+
+CI runs the tests and checks lint and formatting without changing files. The eval fixture repositories have their own configuration and are excluded from Ruff.
 
 ## Security
 

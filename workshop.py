@@ -31,8 +31,12 @@ LABELS = {  # name: (color, description)
 CHECKS_POLL_S = 10  # seconds between looks at a pull request's checks
 NO_CHECKS_GRACE_S = 120  # how long checks may take to appear before we decide there are none
 FAILED_LOG_CHARS = 10_000  # kept from the end of each failed workflow run's log
-NOTE_CHARS = 60_000  # kept of the agent's note: GitHub takes 65,536 characters in a comment, the run record included
-SH_TIMEOUT_S = 600  # for each command the tool runs itself: a stalled one would leave the issue labelled working
+NOTE_CHARS = (
+    60_000  # kept of the agent's note: GitHub takes 65,536 characters in a comment, the run record included
+)
+SH_TIMEOUT_S = (
+    600  # for each command the tool runs itself: a stalled one would leave the issue labelled working
+)
 # For those commands: git and gh fail rather than ask at the terminal, and git ignores replacement refs, which the
 # agent can write in the clone.
 TOOL_ENV = {"GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1", "GIT_NO_REPLACE_OBJECTS": "1"}
@@ -46,13 +50,28 @@ def status(message: str) -> None:
     print(f"workshop: {message}", file=sys.stderr, flush=True)
 
 
-def sh(cmd: list, *, cwd: Path | None = None, input: str | None = None, check: bool = True,
-       env: dict | None = None, timeout: float = SH_TIMEOUT_S) -> subprocess.CompletedProcess:
+def sh(
+    cmd: list,
+    *,
+    cwd: Path | None = None,
+    input: str | None = None,
+    check: bool = True,
+    env: dict | None = None,
+    timeout: float = SH_TIMEOUT_S,
+) -> subprocess.CompletedProcess:
     cmd = [str(part) for part in cmd]
     try:
-        result = subprocess.run(cmd, cwd=cwd, input=input, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", env={**(os.environ if env is None else env), **TOOL_ENV},
-                                timeout=timeout)
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            input=input,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**(os.environ if env is None else env), **TOOL_ENV},
+            timeout=timeout,
+        )
     except FileNotFoundError:
         raise ToolError(f"{cmd[0]} is not installed") from None
     except subprocess.TimeoutExpired:
@@ -85,8 +104,13 @@ def duration(seconds: float) -> str:
 
 
 def markdown_table(headers: list[str], rows: list[list]) -> str:
-    return "\n".join(["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers),
-                      *("| " + " | ".join(str(cell) for cell in row) + " |" for row in rows)])
+    return "\n".join(
+        [
+            "| " + " | ".join(headers) + " |",
+            "|" + "---|" * len(headers),
+            *("| " + " | ".join(str(cell) for cell in row) + " |" for row in rows),
+        ]
+    )
 
 
 # --- arguments and safety
@@ -121,8 +145,10 @@ def find_skills(names: list[str], repo_skills: Path) -> list[Path]:
         candidates = [repo_skills / name / "SKILL.md", SKILLS_DIR / name / "SKILL.md"]
         path = next((path for path in candidates if path.is_file()), None)
         if path is None:
-            raise ToolError(f"unknown skill {name!r}: neither the target repo's {REPO_SKILLS / name / 'SKILL.md'} "
-                            f"nor workshop's skills/{name}/SKILL.md exists")
+            raise ToolError(
+                f"unknown skill {name!r}: neither the target repo's {REPO_SKILLS / name / 'SKILL.md'} "
+                f"nor workshop's skills/{name}/SKILL.md exists"
+            )
         found.append(path)
     return found
 
@@ -167,8 +193,13 @@ def github_file(repo: str, commit: str, path: str) -> str | None:
     Read from GitHub, never from the clone: the agent can write the clone's objects, and git does not check an
     object's content against its name.
     """
-    result = gh("api", "-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/{path}?ref={commit}",
-                check=False)
+    result = gh(
+        "api",
+        "-H",
+        "Accept: application/vnd.github.raw",
+        f"repos/{repo}/contents/{path}?ref={commit}",
+        check=False,
+    )
     if result.returncode == 0:
         return result.stdout
     if "HTTP 404" in result.stderr:
@@ -197,7 +228,9 @@ def prepare_worktree(repo: str, branch: str, clone: Path, worktree: Path) -> str
     default, base = default_branch(clone)
     status(f"fetching {repo}")
     git("-C", clone, "fetch", "--prune", "origin")  # after asking for `base`, so the clone has it
-    git("-C", clone, "remote", "set-head", "origin", default)  # origin/HEAD is for the agent: the tool uses `base`
+    git(
+        "-C", clone, "remote", "set-head", "origin", default
+    )  # origin/HEAD is for the agent: the tool uses `base`
     if (worktree / ".git").exists():
         status(f"reusing {worktree}")
     else:
@@ -207,7 +240,9 @@ def prepare_worktree(repo: str, branch: str, clone: Path, worktree: Path) -> str
         if git("-C", clone, "worktree", "add", worktree, branch, check=False).returncode != 0:
             git("-C", clone, "worktree", "add", "--no-track", "-b", branch, worktree, base)
     # Start from what is on GitHub: the pushed branch, or the default branch if nothing is pushed yet.
-    pushed = git("-C", clone, "rev-parse", "--verify", "--quiet", f"origin/{branch}", check=False).returncode == 0
+    pushed = (
+        git("-C", clone, "rev-parse", "--verify", "--quiet", f"origin/{branch}", check=False).returncode == 0
+    )
     start = f"origin/{branch}" if pushed else base
     status(f"resetting {worktree} to {start}")
     git("-C", worktree, "reset", "--hard", start)
@@ -237,18 +272,28 @@ class Job:
     clone: Path
     settings: dict  # the target repo's .claude/settings.json on its default branch, read once per run
     worktree: Path
-    handoff: Path  # where the agent leaves question.md, pull-request.md and comment.md for the tool to publish
+    handoff: (
+        Path  # where the agent leaves question.md, pull-request.md and comment.md for the tool to publish
+    )
     log_path: Path
     args: argparse.Namespace
     agent_s: float = 0.0  # time spent in the agent this run
     checks_s: float = 0.0  # time spent waiting for checks this run
     pushed: str = ""  # the commit the tool last pushed this run
     github: bool = True  # the read-only GitHub server; evals run without it
-    agent_args: list[str] = field(default_factory=list)  # more for the agent's command line, such as a spending cap
-    validation: dict = field(default_factory=lambda: {
-        "source": "github-checks", "status": "unverified", "reason": "not-checked",
-        "head_sha": "", "observed_at": "", "checks": [],
-    })
+    agent_args: list[str] = field(
+        default_factory=list
+    )  # more for the agent's command line, such as a spending cap
+    validation: dict = field(
+        default_factory=lambda: {
+            "source": "github-checks",
+            "status": "unverified",
+            "reason": "not-checked",
+            "head_sha": "",
+            "observed_at": "",
+            "checks": [],
+        }
+    )
 
     def run_agent(self, prompt: str) -> int:
         status(f"running the agent (log: {self.log_path})")
@@ -281,8 +326,12 @@ def agent_env(job: Job) -> dict[str, str]:
     """The agent's environment. The target repo's `env` setting reaches only its commands, not Claude Code itself:
     Claude Code runs the CLAUDE_ENV_FILE script before each command."""
     env_file = job.log_path.parent / "env.sh"
-    env_file.write_text("".join(f"export {name}={shlex.quote(str(value))}\n"
-                                for name, value in job.settings.get("env", {}).items()))
+    env_file.write_text(
+        "".join(
+            f"export {name}={shlex.quote(str(value))}\n"
+            for name, value in job.settings.get("env", {}).items()
+        )
+    )
     return {**kept_env(), "CLAUDE_ENV_FILE": str(env_file)}
 
 
@@ -311,8 +360,13 @@ def claude_settings(job: Job) -> dict:
             "network": {"allowedDomains": network.get("allowedDomains", [])},
             "filesystem": {
                 "denyRead": ["~/"],
-                "allowRead": [str(job.worktree), str(job.clone / ".git"), str(job.handoff), "~/.gitconfig",
-                              *filesystem.get("allowRead", [])],
+                "allowRead": [
+                    str(job.worktree),
+                    str(job.clone / ".git"),
+                    str(job.handoff),
+                    "~/.gitconfig",
+                    *filesystem.get("allowRead", []),
+                ],
                 "allowWrite": [str(job.handoff), *filesystem.get("allowWrite", [])],
             },
         },
@@ -322,8 +376,10 @@ def claude_settings(job: Job) -> dict:
 # GitHub's MCP server, read-only. It runs outside the sandbox and gets the token from gh itself,
 # so the token is on no command line and not in the agent's environment.
 # Lockdown mode hides what people without push access wrote in a public repo, so a stranger cannot instruct the agent.
-GITHUB_MCP = ('GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)" '
-              "exec github-mcp-server stdio --read-only --lockdown-mode --toolsets issues,pull_requests")
+GITHUB_MCP = (
+    'GITHUB_PERSONAL_ACCESS_TOKEN="$(gh auth token)" '
+    "exec github-mcp-server stdio --read-only --lockdown-mode --toolsets issues,pull_requests"
+)
 
 
 def claude_command(job: Job) -> list[str]:
@@ -339,13 +395,34 @@ def claude_command(job: Job) -> list[str]:
     The agent loads no settings files and no MCP server but GitHub's, and in evals none at all.
     """
     servers = {"github": {"command": "sh", "args": ["-c", GITHUB_MCP]}} if job.github else {}
-    allowed = ["Bash", *(f"Read(/{path.parent}/**)" for path in job.skills),
-               f"Edit(/{job.worktree}/**)", f"Edit(/{job.handoff}/**)", *(["mcp__github"] if job.github else [])]
-    return ["claude", "-p", "--permission-mode", "dontAsk", "--allowedTools", ",".join(allowed),
-            "--disallowedTools", "Monitor",
-            "--settings", json.dumps(claude_settings(job)), "--setting-sources", "",
-            "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": servers}),
-            "--output-format", "stream-json", "--verbose", *job.agent_args]
+    allowed = [
+        "Bash",
+        *(f"Read(/{path.parent}/**)" for path in job.skills),
+        f"Edit(/{job.worktree}/**)",
+        f"Edit(/{job.handoff}/**)",
+        *(["mcp__github"] if job.github else []),
+    ]
+    return [
+        "claude",
+        "-p",
+        "--permission-mode",
+        "dontAsk",
+        "--allowedTools",
+        ",".join(allowed),
+        "--disallowedTools",
+        "Monitor",
+        "--settings",
+        json.dumps(claude_settings(job)),
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        json.dumps({"mcpServers": servers}),
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        *job.agent_args,
+    ]
 
 
 def invoke_agent(job: Job, prompt: str) -> int:
@@ -358,8 +435,16 @@ def invoke_agent(job: Job, prompt: str) -> int:
         log.write(f"=== {timestamp()} prompt:\n{prompt}\n=== output:\n")
         log.flush()
         try:
-            proc = subprocess.Popen(cmd, cwd=worktree, env=env, stdin=subprocess.PIPE, stdout=log,
-                                    stderr=subprocess.STDOUT, text=True, start_new_session=True)
+            proc = subprocess.Popen(
+                cmd,
+                cwd=worktree,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
         except FileNotFoundError:
             raise ToolError(f"agent executable not found: {cmd[0]}") from None
         try:
@@ -378,16 +463,30 @@ def invoke_agent(job: Job, prompt: str) -> int:
         return proc.returncode
 
 
-TOKENS = {"input": "input_tokens", "output": "output_tokens",
-          "cache_read": "cache_read_input_tokens", "cache_creation": "cache_creation_input_tokens"}
+TOKENS = {
+    "input": "input_tokens",
+    "output": "output_tokens",
+    "cache_read": "cache_read_input_tokens",
+    "cache_creation": "cache_creation_input_tokens",
+}
 
 
 def agent_usage(log_path: Path) -> dict:
     """What the agent did in this run's log, from Claude Code's stream-json events. A run that timed out has no cost."""
-    usage = {"agent": "claude", "agent_version": "", "model": "", "turns": 0, "cost_usd": 0.0,
-             "tokens": dict.fromkeys(TOKENS, 0), "tool_calls": Counter(), "denied_tool_calls": Counter()}
+    usage = {
+        "agent": "claude",
+        "agent_version": "",
+        "model": "",
+        "turns": 0,
+        "cost_usd": 0.0,
+        "tokens": dict.fromkeys(TOKENS, 0),
+        "tool_calls": Counter(),
+        "denied_tool_calls": Counter(),
+    }
     in_output = False
-    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []:
+    for line in (
+        log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
+    ):
         if line.startswith("=== "):  # invoke_agent's markers: only the output sections hold events
             in_output = line == "=== output:"
             continue
@@ -398,7 +497,10 @@ def agent_usage(log_path: Path) -> dict:
         if not isinstance(event, dict):
             continue
         if event.get("type") == "system" and event.get("subtype") == "init":
-            usage["agent_version"], usage["model"] = event.get("claude_code_version", ""), event.get("model", "")
+            usage["agent_version"], usage["model"] = (
+                event.get("claude_code_version", ""),
+                event.get("model", ""),
+            )
         elif event.get("type") == "assistant":
             for block in event.get("message", {}).get("content", []):
                 if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -415,31 +517,44 @@ def agent_usage(log_path: Path) -> dict:
 
 
 def job_lines(job: Job) -> list[str]:
-    return [*(f"  {path}" for path in job.skills),
-            f"Target repository: {job.repo}. Issue: #{job.issue}. Branch: {job.branch}.",
-            f"Handoff directory: {job.handoff}"]
+    return [
+        *(f"  {path}" for path in job.skills),
+        f"Target repository: {job.repo}. Issue: #{job.issue}. Branch: {job.branch}.",
+        f"Handoff directory: {job.handoff}",
+    ]
 
 
 def initial_prompt(job: Job, issue: str = "") -> str:
     """The first prompt of a run. Evals have no GitHub tools, so they give the issue thread as `issue`."""
     read = "Then read the repository's AGENTS.md if present"
-    return "\n".join([
-        "You are working a job in a workshop. Read these files first and follow them exactly:",
-        *job_lines(job),
-        f"{read}. This job has no github tools: here is the issue with all its comments.\n\n{issue}" if issue
-        else f"{read}, and the issue with all its comments.",
-    ]) + "\n"
+    return (
+        "\n".join(
+            [
+                "You are working a job in a workshop. Read these files first and follow them exactly:",
+                *job_lines(job),
+                f"{read}. This job has no github tools: here is the issue with all its comments.\n\n{issue}"
+                if issue
+                else f"{read}, and the issue with all its comments.",
+            ]
+        )
+        + "\n"
+    )
 
 
 def fix_prompt(job: Job, pr: int | None, failing: list[str], logs: str) -> str:
-    return "\n".join([
-        f"{f'Pull request #{pr} has' if pr else 'Your change has'} failing checks. Read the same skill files again:",
-        *job_lines(job),
-        f"Failing checks: {', '.join(failing)}",
-        "Logs:",
-        logs,
-        "Fix the cause and commit it on the same branch.",
-    ]) + "\n"
+    return (
+        "\n".join(
+            [
+                f"{f'Pull request #{pr} has' if pr else 'Your change has'} failing checks. Read the same skill files again:",
+                *job_lines(job),
+                f"Failing checks: {', '.join(failing)}",
+                "Logs:",
+                logs,
+                "Fix the cause and commit it on the same branch.",
+            ]
+        )
+        + "\n"
+    )
 
 
 # --- handoff: the tool publishes what the agent left
@@ -465,7 +580,9 @@ def handoff_text(job: Job, name: str) -> str:
 
 
 def open_pr(job: Job) -> dict | None:
-    prs = gh_json("pr", "list", "--repo", job.repo, "--head", job.branch, "--state", "open", "--json", "number,url")
+    prs = gh_json(
+        "pr", "list", "--repo", job.repo, "--head", job.branch, "--state", "open", "--json", "number,url"
+    )
     return prs[0] if prs else None
 
 
@@ -483,11 +600,34 @@ def publish_commits(job: Job) -> dict | None:
     pr = open_pr(job)
     title, _, body = handoff_text(job, "pull-request.md").partition("\n")
     if title and pr:
-        gh("pr", "edit", pr["number"], "--repo", job.repo, "--title", title, "--body-file", "-", input=body.strip())
+        gh(
+            "pr",
+            "edit",
+            pr["number"],
+            "--repo",
+            job.repo,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+            input=body.strip(),
+        )
     elif title and ahead:
         status("opening a pull request")
-        gh("pr", "create", "--repo", job.repo, "--head", job.branch, "--title", title, "--body-file", "-",
-           input=body.strip(), cwd=job.clone)
+        gh(
+            "pr",
+            "create",
+            "--repo",
+            job.repo,
+            "--head",
+            job.branch,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+            input=body.strip(),
+            cwd=job.clone,
+        )
         pr = open_pr(job)
     return pr
 
@@ -505,18 +645,35 @@ def pr_checks(repo: str, pr: int) -> tuple[str, list[dict]]:
             return head, []
     checks = []
     for check in reported:
-        state = (check.get("conclusion") if check.get("status") == "COMPLETED"
-                 else check.get("status") or check.get("state")) or "PENDING"
+        state = (
+            check.get("conclusion")
+            if check.get("status") == "COMPLETED"
+            else check.get("status") or check.get("state")
+        ) or "PENDING"
         if state == "SUCCESS":
             bucket = "pass"
         elif state in ("SKIPPED", "NEUTRAL"):
             bucket = "skipping"
-        elif state in ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"):
+        elif state in (
+            "FAILURE",
+            "ERROR",
+            "CANCELLED",
+            "TIMED_OUT",
+            "ACTION_REQUIRED",
+            "STALE",
+            "STARTUP_FAILURE",
+        ):
             bucket = "fail"
         else:
             bucket = "pending"
-        checks.append({"name": check.get("name") or check.get("context"), "bucket": bucket, "state": state,
-                       "link": check.get("detailsUrl") or check.get("targetUrl") or ""})
+        checks.append(
+            {
+                "name": check.get("name") or check.get("context"),
+                "bucket": bucket,
+                "state": state,
+                "link": check.get("detailsUrl") or check.get("targetUrl") or "",
+            }
+        )
     return info["headRefOid"], checks
 
 
@@ -526,8 +683,14 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
     while True:
         observed_head, checks = pr_checks(repo, pr)
         head = head or observed_head
-        result = {"source": "github-checks", "status": "unverified", "reason": "",
-                  "head_sha": head, "observed_at": timestamp(), "checks": checks}
+        result = {
+            "source": "github-checks",
+            "status": "unverified",
+            "reason": "",
+            "head_sha": head,
+            "observed_at": timestamp(),
+            "checks": checks,
+        }
         if observed_head != head:
             return {**result, "reason": "head-changed", "observed_head_sha": observed_head, "checks": []}
         elapsed = time.monotonic() - start
@@ -548,9 +711,13 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
 def failing_logs(repo: str, failing: list[dict]) -> str:
     """The end of each failed GitHub Actions run's log."""
     run_ids = dict.fromkeys(re.findall(r"/actions/runs/(\d+)", " ".join(check["link"] for check in failing)))
-    logs = [f"--- run {run_id}\n" + gh("run", "view", run_id, "--repo", repo, "--log-failed",
-                                       check=False).stdout.strip()[-FAILED_LOG_CHARS:]
-            for run_id in run_ids]
+    logs = [
+        f"--- run {run_id}\n"
+        + gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
+            -FAILED_LOG_CHARS:
+        ]
+        for run_id in run_ids
+    ]
     return "\n".join(logs) or "(no GitHub Actions logs found; see the checks on the pull request)"
 
 
@@ -567,7 +734,9 @@ def determine_outcome(job: Job, code: int) -> Outcome:
     # The log stays on this machine: it can hold anything a command printed, and the issue may be public.
     log = Path("~") / job.log_path.relative_to(Path.home())
     ended = f"timed out after {job.args.agent_timeout}s" if code == 124 else f"exited with code {code}"
-    return Outcome("escalated", f"the agent {ended} without leaving a question or a pull request; its log is {log}")
+    return Outcome(
+        "escalated", f"the agent {ended} without leaving a question or a pull request; its log is {log}"
+    )
 
 
 def prove(job: Job, pr: dict) -> Outcome:
@@ -577,26 +746,44 @@ def prove(job: Job, pr: dict) -> Outcome:
         status(f"waiting for checks on {pr['url']}")
         started = time.monotonic()
         # Clear the previous round's result before observing a new commit, even if the GitHub request fails.
-        job.validation = {"source": "github-checks", "status": "unverified", "reason": "not-checked",
-                          "head_sha": job.pushed, "observed_at": "", "checks": []}
+        job.validation = {
+            "source": "github-checks",
+            "status": "unverified",
+            "reason": "not-checked",
+            "head_sha": job.pushed,
+            "observed_at": "",
+            "checks": [],
+        }
         job.validation = wait_for_checks(job.repo, pr["number"], job.args.checks_timeout, job.pushed)
         job.checks_s += time.monotonic() - started
         state, reason = job.validation["status"], job.validation["reason"]
         if state == "passed" or reason in ("no-checks", "all-skipped"):
-            reason = {"reported-checks-passed": "reported checks passed", "no-checks": "no checks ran",
-                      "all-skipped": "all reported checks were skipped or neutral"}[reason]
+            reason = {
+                "reported-checks-passed": "reported checks passed",
+                "no-checks": "no checks ran",
+                "all-skipped": "all reported checks were skipped or neutral",
+            }[reason]
             return Outcome("pr-open", reason, pr["url"], attempts, handoff_text(job, "comment.md"))
         if reason == "head-changed":
-            return Outcome("escalated", "the pull request head changed while checking the pushed commit",
-                           pr["url"], attempts)
+            return Outcome(
+                "escalated",
+                "the pull request head changed while checking the pushed commit",
+                pr["url"],
+                attempts,
+            )
         if reason == "timed-out":
-            return Outcome("escalated", f"checks did not finish within {job.args.checks_timeout}s", pr["url"],
-                           attempts)
+            return Outcome(
+                "escalated", f"checks did not finish within {job.args.checks_timeout}s", pr["url"], attempts
+            )
         failing = [check for check in job.validation["checks"] if check["bucket"] == "fail"]
         names = sorted({check["name"] for check in failing})
         if attempts >= job.args.max_fix_attempts:
-            return Outcome("escalated", f"checks still failing after {attempts} fix attempts: {', '.join(names)}",
-                           pr["url"], attempts)
+            return Outcome(
+                "escalated",
+                f"checks still failing after {attempts} fix attempts: {', '.join(names)}",
+                pr["url"],
+                attempts,
+            )
         attempts += 1
         status(f"checks failed ({', '.join(names)}); fix attempt {attempts} of {job.args.max_fix_attempts}")
         job.run_agent(fix_prompt(job, pr["number"], names, failing_logs(job.repo, failing)))
@@ -608,12 +795,16 @@ def prove(job: Job, pr: dict) -> Outcome:
 def summary(outcome: Outcome, job: Job, record: dict) -> str:
     lines = [f"**workshop: {outcome.name}**: {outcome.reason}.", ""]
     if outcome.pr_url:
-        lines += [f"- Pull request: {outcome.pr_url}",
-                  f"- Fix attempts: {outcome.fix_attempts} of {job.args.max_fix_attempts}"]
+        lines += [
+            f"- Pull request: {outcome.pr_url}",
+            f"- Fix attempts: {outcome.fix_attempts} of {job.args.max_fix_attempts}",
+        ]
     lines.append(f"- Agent time: {duration(job.agent_s)}. API-equivalent cost: ${record['cost_usd']:.2f}.")
     validation = record["validation"]
     revision = f" at `{validation['head_sha'][:12]}`" if validation["head_sha"] else ""
-    lines.append(f"- GitHub checks: {validation['status']}{revision} ({validation['reason'].replace('-', ' ')}).")
+    lines.append(
+        f"- GitHub checks: {validation['status']}{revision} ({validation['reason'].replace('-', ' ')})."
+    )
     # The run record for `workshop score`, not shown. With no "<" or ">", nothing in it can end the comment early.
     hidden = json.dumps(record).replace("<", "\\u003c").replace(">", "\\u003e")
     footer = f"\n\n<!-- workshop-run: {hidden} -->\n"
@@ -633,8 +824,14 @@ def summary(outcome: Outcome, job: Job, record: dict) -> str:
 
 
 def skill_records(paths: list[Path]) -> list[dict]:
-    return [{"name": path.parent.name, "from": "workshop" if path.is_relative_to(SKILLS_DIR) else "target repo",
-             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()[:12]} for path in paths]
+    return [
+        {
+            "name": path.parent.name,
+            "from": "workshop" if path.is_relative_to(SKILLS_DIR) else "target repo",
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()[:12],
+        }
+        for path in paths
+    ]
 
 
 def run_record(job: Job, outcome: Outcome | None, error: str, total_s: float) -> dict:
@@ -681,7 +878,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     shutil.rmtree(handoff, ignore_errors=True)  # each run starts with an empty handoff
     handoff.mkdir(parents=True)
     log_path = home / "logs" / name / f"{timestamp('%Y%m%dT%H%M%S.%fZ')}.log"  # one per run
-    job = Job(repo, issue, skills, branch, base, clone, repo_settings(repo, base), worktree, handoff, log_path, args)
+    job = Job(
+        repo, issue, skills, branch, base, clone, repo_settings(repo, base), worktree, handoff, log_path, args
+    )
 
     outcome, record, posted, started = None, None, False, time.monotonic()
     try:
@@ -694,13 +893,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         gh("issue", "comment", issue, "--repo", repo, "--body-file", "-", input=summary(outcome, job, record))
         posted = True
     except BaseException as exc:
-        record = record or run_record(job, outcome, str(exc) or type(exc).__name__, time.monotonic() - started)
+        record = record or run_record(
+            job, outcome, str(exc) or type(exc).__name__, time.monotonic() - started
+        )
         raise
     finally:  # the record first: it needs no network
         save_record(record, home / "logs" / "runs.jsonl")
         # Always take workshop:working off. Waiting means the run's comment says why: without one, as after an error
         # or Ctrl-C, queue the issue again.
-        set_labels(repo, issue, add=["workshop:waiting" if posted else "workshop:queued"], remove=["workshop:working"])
+        set_labels(
+            repo,
+            issue,
+            add=["workshop:waiting" if posted else "workshop:queued"],
+            remove=["workshop:working"],
+        )
     return 0
 
 
@@ -716,8 +922,20 @@ def job_records(repo: str, since: str) -> list[list[dict]]:
     """Each job's run records, oldest first. Only comments by the account gh runs as count, so none can be forged."""
     issues = {}
     for label in LABELS:
-        for issue in gh_json("issue", "list", "--repo", repo, "--state", "all", "--label", label, "--limit", "1000",
-                             "--json", "number,comments"):
+        for issue in gh_json(
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "all",
+            "--label",
+            label,
+            "--limit",
+            "1000",
+            "--json",
+            "number,comments",
+        ):
             issues[issue["number"]] = issue
     jobs = []
     for issue in issues.values():
@@ -764,28 +982,55 @@ def cmd_score(args: argparse.Namespace) -> int:
         status(f"no run records in {args.repo}{f' since {args.since}' if args.since else ''}")
         return 0
     validations = ("passed", "failed", "unverified", "unknown")
-    headers = ["Skills", "Jobs", *(ending.capitalize() for ending in ENDINGS), "Runs", "Questions", "Fix attempts",
-               "Denied calls", "API-equivalent cost", "Per merged PR"]
+    headers = [
+        "Skills",
+        "Jobs",
+        *(ending.capitalize() for ending in ENDINGS),
+        "Runs",
+        "Questions",
+        "Fix attempts",
+        "Denied calls",
+        "API-equivalent cost",
+        "Per merged PR",
+    ]
     headers += [f"CI {state}" for state in validations]
     table = []
     for skills, row in sorted(rows.items()):
         merged = row["merged as-is"] + row["merged after changes"]
-        table.append([skills, *(row[key] for key in COUNTED),
-                      f"${row['cost']:.2f}", f"${row['cost'] / merged:.2f}" if merged else "-",
-                      *(row["ci_" + state] for state in validations)])
+        table.append(
+            [
+                skills,
+                *(row[key] for key in COUNTED),
+                f"${row['cost']:.2f}",
+                f"${row['cost'] / merged:.2f}" if merged else "-",
+                *(row["ci_" + state] for state in validations),
+            ]
+        )
     print(markdown_table(headers, table))
     return 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
     import workshop_eval  # only evals need it
+
     return workshop_eval.cmd_eval(args)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
     require_gh_login()
     for name, (color, description) in LABELS.items():
-        gh("label", "create", name, "--repo", args.repo, "--color", color, "--description", description, "--force")
+        gh(
+            "label",
+            "create",
+            name,
+            "--repo",
+            args.repo,
+            "--color",
+            color,
+            "--description",
+            description,
+            "--force",
+        )
         status(f"label {name} is ready")
     return 0
 

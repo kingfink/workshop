@@ -16,5 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest
-      - run: python -m pytest -q
+      - uses: astral-sh/setup-uv@v9
+      - run: uv sync --locked
+      - run: uv run --locked ruff check --output-format=github .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked python -m pytest -q

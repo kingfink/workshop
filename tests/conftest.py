@@ -24,22 +24,26 @@ class Fake:
         self.path = tmp_path / "state.json"
         self.home = tmp_path / "home"
         self.worktree = self.home / ".workshop" / "worktrees" / "acme-analytics-12"
-        self.path.write_text(json.dumps({
-            "labels": [],
-            "default_commit": DEFAULT,
-            "issue": {"state": "OPEN", "labels": ["workshop:queued"], "comments": []},
-            "prs": [],
-            "checks": [{"build": "pass"}],  # one set of checks per push; the last set repeats
-            "commits": 0,  # on the job branch and not on the default branch
-            "pushed_commits": 0,
-            "pushes": 0,
-            "remote_branches": [],
-            "local_branches": [],
-            "calls": [],
-            "agent_runs": [],
-            "agent_mode": "pr",
-            "run_logs": {"555": "ERROR: column new_field not found"},
-        }))
+        self.path.write_text(
+            json.dumps(
+                {
+                    "labels": [],
+                    "default_commit": DEFAULT,
+                    "issue": {"state": "OPEN", "labels": ["workshop:queued"], "comments": []},
+                    "prs": [],
+                    "checks": [{"build": "pass"}],  # one set of checks per push; the last set repeats
+                    "commits": 0,  # on the job branch and not on the default branch
+                    "pushed_commits": 0,
+                    "pushes": 0,
+                    "remote_branches": [],
+                    "local_branches": [],
+                    "calls": [],
+                    "agent_runs": [],
+                    "agent_mode": "pr",
+                    "run_logs": {"555": "ERROR: column new_field not found"},
+                }
+            )
+        )
 
     @property
     def state(self) -> dict:
@@ -75,9 +79,11 @@ class Fake:
 
     def calls(self, *words: str) -> list[list[str]]:
         """Recorded calls whose arguments contain `words` in order."""
+
         def matches(call):
             rest = iter(call)
             return all(word in rest for word in words)
+
         return [call for call in self.state["calls"] if matches(call)]
 
 
@@ -86,8 +92,14 @@ def fake(tmp_path, monkeypatch) -> Fake:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     f = Fake(tmp_path)
-    for name in ("gh", "git", "agent"):  # the agent gets only the environment the tool gives it, so name the state here
-        (bin_dir / name).write_text(f'#!/bin/sh\nFAKE_STATE="{f.path}" exec "{sys.executable}" "{FAKE}" {name} "$@"\n')
+    for name in (
+        "gh",
+        "git",
+        "agent",
+    ):  # the agent gets only the environment the tool gives it, so name the state here
+        (bin_dir / name).write_text(
+            f'#!/bin/sh\nFAKE_STATE="{f.path}" exec "{sys.executable}" "{FAKE}" {name} "$@"\n'
+        )
         (bin_dir / name).chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("HOME", str(f.home))

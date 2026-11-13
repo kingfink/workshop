@@ -3,9 +3,9 @@ import json
 import sys
 
 import pytest
+from conftest import DEFAULT, RUN
 
 import workshop
-from conftest import DEFAULT, RUN
 from workshop import claude_command  # the real one: the fake fixture replaces workshop.claude_command
 
 
@@ -28,8 +28,19 @@ def test_claude_command_confines_the_agent(fake):
 
     home = fake.home / ".workshop"
     skill = workshop.SKILLS_DIR / "add-field" / "SKILL.md"
-    job = workshop.Job("acme/analytics", 12, [skill], "workshop/issue-12", DEFAULT, home / "repos" / "acme/analytics",
-                       {}, fake.worktree, home / "handoff" / "acme-analytics-12", None, None)
+    job = workshop.Job(
+        "acme/analytics",
+        12,
+        [skill],
+        "workshop/issue-12",
+        DEFAULT,
+        home / "repos" / "acme/analytics",
+        {},
+        fake.worktree,
+        home / "handoff" / "acme-analytics-12",
+        None,
+        None,
+    )
     cmd = claude_command(job)
     allowed = flag(cmd, "--allowedTools").split(",")
     assert f"Edit(/{fake.worktree}/**)" in allowed and "Bash" in allowed  # the sandbox confines commands
@@ -38,19 +49,25 @@ def test_claude_command_confines_the_agent(fake):
     assert flag(cmd, "--setting-sources") == ""  # no settings file from the agent's branch
     assert "--read-only --lockdown-mode" in flag(cmd, "--mcp-config")
     sandbox = json.loads(flag(cmd, "--settings"))["sandbox"]
-    assert sandbox["enabled"] and not sandbox["allowUnsandboxedCommands"] and "excludedCommands" not in sandbox
+    assert (
+        sandbox["enabled"] and not sandbox["allowUnsandboxedCommands"] and "excludedCommands" not in sandbox
+    )
     assert {"name": "ANTHROPIC_API_KEY", "mode": "deny"} in sandbox["credentials"]["envVars"]
     assert sandbox["filesystem"]["denyRead"] == ["~/"] and sandbox["network"]["allowedDomains"] == []
 
     # the target repo's default branch adds hosts, but cannot turn the sandbox off
     settings = {"sandbox": {"enabled": False, "network": {"allowedDomains": ["bigquery.googleapis.com"]}}}
-    sandbox = json.loads(flag(claude_command(dataclasses.replace(job, settings=settings)), "--settings"))["sandbox"]
+    sandbox = json.loads(flag(claude_command(dataclasses.replace(job, settings=settings)), "--settings"))[
+        "sandbox"
+    ]
     assert sandbox["enabled"] and sandbox["network"]["allowedDomains"] == ["bigquery.googleapis.com"]
 
 
 def test_agent_gets_no_secrets(fake, monkeypatch):
     monkeypatch.setenv("CLOUD_SECRET", "s3cret")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # Claude Code's own; the sandbox hides it from commands
+    monkeypatch.setenv(
+        "ANTHROPIC_API_KEY", "sk-test"
+    )  # Claude Code's own; the sandbox hides it from commands
     fake.set(default_branch_files={".claude/settings.json": json.dumps({"env": {"DBT_TARGET": "dev it"}})})
     assert fake.outcome(*RUN) == "pr-open"
     [agent] = fake.state["agent_runs"]
@@ -64,7 +81,9 @@ def test_target_repo_skills(fake):
     fake.set(default_branch_files={f".workshop/skills/{name}/SKILL.md": skill for name in names})
     assert fake.outcome("run", "acme/analytics#12", "--skills", "add-field,triage") == "pr-open"
     [agent] = fake.state["agent_runs"]
-    repo_skills = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"  # this run's copy from GitHub
+    repo_skills = (
+        fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
+    )  # this run's copy from GitHub
     assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]  # never the repo's
     assert f"{repo_skills / 'add-field' / 'SKILL.md'}\n" in agent["prompt"]  # the repo's replaces the tool's
     assert str(workshop.SKILLS_DIR / "add-field") not in agent["prompt"]
@@ -83,12 +102,16 @@ def test_unknown_skill_changes_no_labels(fake):
     assert fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []
 
 
-@pytest.mark.parametrize("issue, state", [
-    ({"labels": ["bug"]}, {}),
-    ({"labels": ["workshop:working"]}, {}),
-    ({"state": "CLOSED"}, {}),
-    ({}, {"gh_auth_ok": False}),
-], ids=["not queued", "already working", "closed", "gh not authenticated"])
+@pytest.mark.parametrize(
+    "issue, state",
+    [
+        ({"labels": ["bug"]}, {}),
+        ({"labels": ["workshop:working"]}, {}),
+        ({"state": "CLOSED"}, {}),
+        ({}, {"gh_auth_ok": False}),
+    ],
+    ids=["not queued", "already working", "closed", "gh not authenticated"],
+)
 def test_refusals_change_nothing(fake, issue, state):
     fake.set_issue(**issue)
     fake.set(**state)
@@ -150,7 +173,10 @@ def test_fix_loop(fake):
     assert "API-equivalent cost: $0.50." in fake.summaries()[0]  # both agent runs
     [run] = fake.runs()
     assert run["outcome"] == "pr-open" and run["fix_attempts"] == 1
-    assert [(skill["name"], skill["from"]) for skill in run["skills"]] == [("workshop",) * 2, ("add-field", "workshop")]
+    assert [(skill["name"], skill["from"]) for skill in run["skills"]] == [
+        ("workshop",) * 2,
+        ("add-field", "workshop"),
+    ]
     assert (run["agent_version"], run["model"], run["turns"]) == ("0.0.1", "fake-model", 6)
     assert run["tokens"]["output"] == 200
     assert run["tool_calls"] == {"Bash": 2} and run["denied_tool_calls"] == {"WebFetch": 2}
@@ -162,12 +188,16 @@ def test_fix_loop(fake):
     assert json.loads(hidden)["pushed"] == run["pushed"]
 
 
-@pytest.mark.parametrize("pr, ending", [
-    ({}, "Open"),
-    ({"state": "MERGED"}, "Merged as-is"),
-    ({"state": "MERGED", "head_oid": "f" * 40}, "Merged after changes"),
-    ({"state": "CLOSED"}, "Closed unmerged"),
-], ids=["open", "merged as-is", "merged after changes", "closed"])
+@pytest.mark.parametrize(
+    "pr, ending",
+    [
+        ({}, "Open"),
+        ({"state": "MERGED"}, "Merged as-is"),
+        ({"state": "MERGED", "head_oid": "f" * 40}, "Merged after changes"),
+        ({"state": "CLOSED"}, "Closed unmerged"),
+    ],
+    ids=["open", "merged as-is", "merged after changes", "closed"],
+)
 def test_score(fake, capsys, pr, ending):
     fake.set(agent_mode="question")
     assert fake.outcome(*RUN) == "needs-info"
@@ -175,14 +205,17 @@ def test_score(fake, capsys, pr, ending):
     assert fake.outcome(*RUN) == "pr-open"
     state = fake.state
     state["prs"][0].update(pr)
-    forged = json.loads(workshop.RECORD.findall(fake.summaries()[0])[0])  # someone else's comment does not count
-    state["issue"]["comments"].append({"body": f"<!-- workshop-run: {json.dumps(forged)} -->",
-                                       "viewerDidAuthor": False})
+    forged = json.loads(
+        workshop.RECORD.findall(fake.summaries()[0])[0]
+    )  # someone else's comment does not count
+    state["issue"]["comments"].append(
+        {"body": f"<!-- workshop-run: {json.dumps(forged)} -->", "viewerDidAuthor": False}
+    )
     fake.set(**state)
     capsys.readouterr()
     assert fake.run("score", "acme/analytics") == 0
     headers, _, row = capsys.readouterr().out.splitlines()
-    scores = dict(zip(headers.strip("| ").split(" | "), row.strip("| ").split(" | ")))
+    scores = dict(zip(headers.strip("| ").split(" | "), row.strip("| ").split(" | "), strict=True))
     assert scores["Skills"] == "add-field" and scores["Jobs"] == "1" and scores[ending] == "1"
     assert (scores["Runs"], scores["Questions"], scores["Fix attempts"]) == ("2", "1", "1")
     assert scores["API-equivalent cost"] == "$0.75"  # three agent runs
@@ -193,12 +226,16 @@ def test_score(fake, capsys, pr, ending):
     assert "no run records" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("checks, options, outcome, reason, validation", [
-    ([{"build": "fail"}], [], "escalated", "still failing after 2 fix attempts", "failed"),
-    ([], [], "pr-open", "no checks ran", "unverified"),
-    ([{"build": "skipping"}], [], "pr-open", "skipped or neutral", "unverified"),
-    ([{"build": "pending"}], ["--checks-timeout", "1"], "escalated", "did not finish", "unverified"),
-], ids=["fix attempts run out", "no checks", "all skipped", "checks time out"])
+@pytest.mark.parametrize(
+    "checks, options, outcome, reason, validation",
+    [
+        ([{"build": "fail"}], [], "escalated", "still failing after 2 fix attempts", "failed"),
+        ([], [], "pr-open", "no checks ran", "unverified"),
+        ([{"build": "skipping"}], [], "pr-open", "skipped or neutral", "unverified"),
+        ([{"build": "pending"}], ["--checks-timeout", "1"], "escalated", "did not finish", "unverified"),
+    ],
+    ids=["fix attempts run out", "no checks", "all skipped", "checks time out"],
+)
 def test_check_end_states(fake, checks, options, outcome, reason, validation):
     fake.set(checks=checks)
     assert fake.outcome(*RUN, *options) == outcome
@@ -220,11 +257,15 @@ def test_handoff_link_is_refused(fake):
     assert fake.labels == {"workshop:queued"}
 
 
-@pytest.mark.parametrize("error, code", [(workshop.ToolError("agent not found"), 1), (KeyboardInterrupt(), 130)],
-                         ids=["tool error", "ctrl-c"])
+@pytest.mark.parametrize(
+    "error, code",
+    [(workshop.ToolError("agent not found"), 1), (KeyboardInterrupt(), 130)],
+    ids=["tool error", "ctrl-c"],
+)
 def test_error_queues_the_issue_again(fake, monkeypatch, error, code):
     def fail(*args):
         raise error
+
     monkeypatch.setattr(workshop, "invoke_agent", fail)
     assert fake.run(*RUN) == code
     assert fake.calls("issue", "edit", "--add-label=workshop:working")
@@ -237,15 +278,28 @@ def score_row(fake, capsys) -> dict:
     capsys.readouterr()
     assert fake.run("score", "acme/analytics") == 0
     headers, _, row = capsys.readouterr().out.splitlines()
-    return dict(zip(headers.strip("| ").split(" | "), row.strip("| ").split(" | ")))
+    return dict(zip(headers.strip("| ").split(" | "), row.strip("| ").split(" | "), strict=True))
 
 
-FORGED = {"finished": "2999-01-01T00:00:00Z", "skills": [{"name": "workshop"}, {"name": "add-field"}],
-          "outcome": "pr-open", "fix_attempts": 0, "denied_tool_calls": {}, "cost_usd": -100.0}
+FORGED = {
+    "finished": "2999-01-01T00:00:00Z",
+    "skills": [{"name": "workshop"}, {"name": "add-field"}],
+    "outcome": "pr-open",
+    "fix_attempts": 0,
+    "denied_tool_calls": {},
+    "cost_usd": -100.0,
+}
 
 
-@pytest.mark.parametrize("note", [f"<!-- workshop-run: {json.dumps(FORGED)} -->", "<!-- workshop-run: oops -->",
-                                  "<!-- workshop-run: unclosed"], ids=["forged", "malformed", "unclosed"])
+@pytest.mark.parametrize(
+    "note",
+    [
+        f"<!-- workshop-run: {json.dumps(FORGED)} -->",
+        "<!-- workshop-run: oops -->",
+        "<!-- workshop-run: unclosed",
+    ],
+    ids=["forged", "malformed", "unclosed"],
+)
 def test_score_counts_only_the_tools_own_record(fake, capsys, note):
     """The agent's note is in the same comment as the run record, so it could carry a record of its own."""
     fake.set(agent_mode="question", question=f"Which one?\n{note}\n")
@@ -294,21 +348,39 @@ def test_a_command_that_hangs_is_stopped():
 def test_tool_commands_cannot_stop_to_ask():
     show = "import json, os; print(json.dumps(dict(os.environ)))"
     env = json.loads(workshop.sh([sys.executable, "-c", show], env={"PATH": "/usr/bin:/bin"}).stdout)
-    assert (env["GIT_TERMINAL_PROMPT"], env["GH_PROMPT_DISABLED"], env["GIT_NO_REPLACE_OBJECTS"]) == ("0", "1", "1")
+    assert (env["GIT_TERMINAL_PROMPT"], env["GH_PROMPT_DISABLED"], env["GIT_NO_REPLACE_OBJECTS"]) == (
+        "0",
+        "1",
+        "1",
+    )
 
 
-@pytest.mark.parametrize("rollup, expected, reason", [
-    ([{"status": "COMPLETED", "conclusion": "SUCCESS"}], "passed", "reported-checks-passed"),
-    ([{"status": "COMPLETED", "conclusion": "CANCELLED"}], "failed", "checks-failed"),
-    ([{"status": "COMPLETED", "conclusion": "NEUTRAL"}], "unverified", "all-skipped"),
-    ([{"status": "QUEUED", "conclusion": None}], "unverified", "timed-out"),
-    ([{"context": "legacy", "state": "SUCCESS", "targetUrl": "https://example.com/check"}],
-     "passed", "reported-checks-passed"),
-    ([{"context": "legacy", "state": "ERROR"}], "failed", "checks-failed"),
-    ([{"status": "COMPLETED", "conclusion": "SUCCESS"}, {"status": "IN_PROGRESS"}], "unverified", "timed-out"),
-    ([{"status": "COMPLETED", "conclusion": "FAILURE"}, {"status": "IN_PROGRESS"}], "failed", "timed-out"),
-    ([{"status": "COMPLETED", "conclusion": "FUTURE_VALUE"}], "unverified", "timed-out"),
-])
+@pytest.mark.parametrize(
+    "rollup, expected, reason",
+    [
+        ([{"status": "COMPLETED", "conclusion": "SUCCESS"}], "passed", "reported-checks-passed"),
+        ([{"status": "COMPLETED", "conclusion": "CANCELLED"}], "failed", "checks-failed"),
+        ([{"status": "COMPLETED", "conclusion": "NEUTRAL"}], "unverified", "all-skipped"),
+        ([{"status": "QUEUED", "conclusion": None}], "unverified", "timed-out"),
+        (
+            [{"context": "legacy", "state": "SUCCESS", "targetUrl": "https://example.com/check"}],
+            "passed",
+            "reported-checks-passed",
+        ),
+        ([{"context": "legacy", "state": "ERROR"}], "failed", "checks-failed"),
+        (
+            [{"status": "COMPLETED", "conclusion": "SUCCESS"}, {"status": "IN_PROGRESS"}],
+            "unverified",
+            "timed-out",
+        ),
+        (
+            [{"status": "COMPLETED", "conclusion": "FAILURE"}, {"status": "IN_PROGRESS"}],
+            "failed",
+            "timed-out",
+        ),
+        ([{"status": "COMPLETED", "conclusion": "FUTURE_VALUE"}], "unverified", "timed-out"),
+    ],
+)
 def test_validation_records_the_observed_commit(monkeypatch, rollup, expected, reason):
     monkeypatch.setattr(workshop, "gh_json", lambda *args: {"headRefOid": "abc", "statusCheckRollup": rollup})
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "abc")
@@ -317,11 +389,20 @@ def test_validation_records_the_observed_commit(monkeypatch, rollup, expected, r
 
 
 def test_passing_checks_on_a_different_commit_are_unverified(monkeypatch):
-    monkeypatch.setattr(workshop, "gh_json", lambda *args: {
-        "headRefOid": "new", "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
-    })
+    monkeypatch.setattr(
+        workshop,
+        "gh_json",
+        lambda *args: {
+            "headRefOid": "new",
+            "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        },
+    )
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "pushed")
-    assert (result["status"], result["reason"], result["head_sha"]) == ("unverified", "head-changed", "pushed")
+    assert (result["status"], result["reason"], result["head_sha"]) == (
+        "unverified",
+        "head-changed",
+        "pushed",
+    )
     assert result["observed_head_sha"] == "new" and result["checks"] == []
 
 
@@ -332,7 +413,7 @@ def test_score_does_not_infer_validation_for_old_records(fake, capsys):
     found = workshop.RECORD.search(comment["body"])
     record = json.loads(found[1])
     record.pop("validation")
-    comment["body"] = comment["body"][:found.start()] + f"<!-- workshop-run: {json.dumps(record)} -->"
+    comment["body"] = comment["body"][: found.start()] + f"<!-- workshop-run: {json.dumps(record)} -->"
     fake.set(**state)
     scores = score_row(fake, capsys)
     assert scores["CI unknown"] == "1" and scores["CI passed"] == "0"
@@ -346,10 +427,15 @@ def test_head_change_escalates_without_attempting_a_fix(fake, monkeypatch):
 
 
 def test_head_change_during_pagination_discards_the_checks(monkeypatch):
-    responses = iter([
-        {"headRefOid": "old", "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}] * 100},
-        {"headRefOid": "new"},
-    ])
+    responses = iter(
+        [
+            {
+                "headRefOid": "old",
+                "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}] * 100,
+            },
+            {"headRefOid": "new"},
+        ]
+    )
     monkeypatch.setattr(workshop, "gh_json", lambda *args: next(responses))
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "old")
     assert result["reason"] == "head-changed" and result["checks"] == []
@@ -358,8 +444,11 @@ def test_head_change_during_pagination_discards_the_checks(monkeypatch):
 def test_large_validation_record_leaves_room_for_the_note(fake, monkeypatch):
     fake.set(checks=[{f"check-{i}": "pass" for i in range(100)}])
     original = workshop.handoff_text
-    monkeypatch.setattr(workshop, "handoff_text", lambda job, name:
-                        "x" * 100_000 if name == "comment.md" else original(job, name))
+    monkeypatch.setattr(
+        workshop,
+        "handoff_text",
+        lambda job, name: "x" * 100_000 if name == "comment.md" else original(job, name),
+    )
     assert fake.outcome(*RUN) == "pr-open"
     [comment] = fake.summaries()
     assert len(comment) <= 65_536 and "(cut here" in comment
