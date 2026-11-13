@@ -1,0 +1,9 @@
+# The data is already loaded; changing downstream models belongs to a different job skill.
+skills = ["add-source"]
+fixture = "dbt-duckdb"
+expect = "question"
+question = "explain that the requested work changes downstream models rather than ingestion and offer to handle it with an appropriate skill or a person"
+
+[issue]
+title = "Expose customer plan tier"
+body = "The plan_tier field is already in raw.customers. Add it to stg_customers and dim_customers, with descriptions and appropriate tests. Do not change ingestion."
