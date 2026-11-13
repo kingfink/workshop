@@ -26,20 +26,24 @@ Out of scope:
 
 ## Locating
 
-Find candidate columns in the loaded source tables and in any ingestion schema files in the repository. If more than one fits, ask.
+If the issue names a source table or column, inspect it first. Search for alternatives only if it cannot be found. Otherwise find candidate columns in the loaded source tables and any ingestion schema files in the repository. If more than one fits, ask.
+
+Group schema, uniqueness and join checks into as few warehouse calls as possible. Once the source, any join keys and the destination are established, make the change.
 
 ## Changing
 
 In this order:
 
-1. The first model that reads the source table.
-2. Each downstream model between it and where the requester wants to use the field.
-3. The semantic layer or BI definitions, if the repository has them.
-4. The column description.
+1. Capture the baseline needed to verify row counts, grain and pre-existing columns before editing.
+2. Update the first model that reads the source table.
+3. Update each downstream model between it and where the requester wants to use the field.
+4. Update the semantic layer or BI definitions, if the repository has them.
+5. Update the column description.
 
 ## Verification
 
 - Add not-null or accepted-values tests where the field's meaning implies them, the way the repository tests similar columns.
+- Build all changed models and the descendants necessary to validate the change. Repeat a successful check only after a relevant change or a new failure.
 - The row count, the grain and every pre-existing column of each touched model must stay the same. In the pull request, give the row counts before and after for each touched model, and say how you confirmed the rest.
 
 ## Close-out comment

@@ -15,7 +15,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -405,6 +405,8 @@ def claude_command(job: Job) -> list[str]:
     return [
         "claude",
         "-p",
+        "--effort",
+        "medium",
         "--permission-mode",
         "dontAsk",
         "--allowedTools",
@@ -431,6 +433,11 @@ def invoke_agent(job: Job, prompt: str) -> int:
     cmd = claude_command(job)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = agent_env(job)
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_s)
+    prompt += (
+        f"\nThis invocation stops at {deadline:%Y-%m-%dT%H:%M:%SZ} ({timeout_s}s from now). "
+        "Allow time for the required checks, commits and handoff files before that deadline.\n"
+    )
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"=== {timestamp()} prompt:\n{prompt}\n=== output:\n")
         log.flush()

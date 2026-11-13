@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from conftest import DEFAULT, RUN
@@ -42,6 +43,7 @@ def test_claude_command_confines_the_agent(fake):
         None,
     )
     cmd = claude_command(job)
+    assert flag(cmd, "--effort") == "medium"
     allowed = flag(cmd, "--allowedTools").split(",")
     assert f"Edit(/{fake.worktree}/**)" in allowed and "Bash" in allowed  # the sandbox confines commands
     assert [rule for rule in allowed if rule.startswith("Read")] == [f"Read(/{skill.parent}/**)"]
@@ -248,6 +250,22 @@ def test_agent_timeout(fake):
     fake.set(agent_mode="sleep")
     assert fake.outcome(*RUN, "--agent-timeout", "1") == "escalated"
     assert "timed out after 1s" in fake.summaries()[0]
+
+
+def test_agent_deadline_uses_each_invocations_timeout(fake):
+    fake.set(checks=[{"build": "fail"}, {"build": "pass"}])
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    assert fake.outcome(*RUN, "--agent-timeout", "30") == "pr-open"
+    after = datetime.now(timezone.utc)
+    assert len(fake.state["agent_runs"]) == 2
+    for run in fake.state["agent_runs"]:
+        deadline = run["prompt"].split("This invocation stops at ")[1].split(" ")[0]
+        assert (
+            before + timedelta(seconds=30)
+            <= datetime.fromisoformat(deadline)
+            <= after + timedelta(seconds=30)
+        )
+        assert "(30s from now)" in run["prompt"]
 
 
 def test_handoff_link_is_refused(fake):

@@ -46,6 +46,8 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 `run` works one issue, which must be open and labelled `workshop:queued` or `workshop:waiting`. It clones the issue's repo under `~/.workshop/` and works there, so it can be run from any directory. Run it again to continue after answering a question.
 
+The agent runs at `medium` effort. Each invocation's prompt includes its deadline, set by `--agent-timeout`.
+
 | Option | Default | |
 |---|---|---|
 | `--skills` | required | Comma-separated. The `workshop` skill is always included. A target repo's own `.workshop/skills/<name>/SKILL.md`, on its default branch, replaces workshop's skill of that name, except `workshop`. |

@@ -34,8 +34,14 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
         ),
     )
     monkeypatch.setattr(workshop_eval, "prepare_agent_env", lambda worktree: None)
-    builds = iter([(False, "Compilation Error in model dim_customers"), (True, "")])
-    monkeypatch.setattr(workshop_eval, "dbt_build", lambda fixture, project: next(builds))
+    builds = iter([(False, "Compilation Error in model dim_customers")])
+    monkeypatch.setattr(
+        workshop_eval,
+        "dbt_build",
+        lambda fixture, project: (
+            next(builds, (True, "")) if project.parent.name.startswith("add-field-plan-tier-") else (True, "")
+        ),
+    )
     expected = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-field-plan-tier")
     monkeypatch.setattr(workshop_eval, "query", lambda fixture, project, sql: expected["queries"][0]["rows"])
     monkeypatch.setattr(workshop_eval, "snapshot", lambda fixture, project: fixture.baseline)
@@ -92,6 +98,7 @@ def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
     assert "does not say that no loaded table" in results["add-field-not-loaded"]["why"]
     plan_tier = results["add-field-plan-tier"]
     assert plan_tier["passed"] and plan_tier["fix_attempts"] == 1  # the first build failed
+    assert results["add-field-misnamed-source"]["passed"]
     [fix] = [prompt for prompt, _ in runs if prompt.startswith("Your change has failing checks.")]
     assert "Compilation Error" in fix
     [phone] = [prompt for prompt, _ in runs if "# Add phone number to dim_customers" in prompt]
