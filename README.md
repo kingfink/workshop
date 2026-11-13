@@ -118,6 +118,12 @@ A run that is killed before it can clean up, such as by a power cut, leaves the 
 
 ## Roadmap ideas
 
+### Triage and follow-up issues
+
+Review issues, tag them with the applicable job skills, and flag missing information, prerequisites or work to split into separate issues. Let `run` use those labels to select skills, combining compatible skills for one change. The owner still chooses which issues to queue.
+
+At the end of a job, let the agent hand off follow-up work for workshop to create as linked issues in the same or another relevant repository. Include the reason, a way to verify completion, suggested skills and any dependency on the original change. Reuse existing issues on reruns, and send follow-ups through triage before the owner queues them. Follow-ups that depend on the original change wait until that prerequisite is satisfied.
+
 ### Update dependencies
 
 One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and successful runs without changes.
