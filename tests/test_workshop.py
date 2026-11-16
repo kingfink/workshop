@@ -18,8 +18,8 @@ def test_init_creates_labels_and_is_safe_to_rerun(fake):
 
 def test_bad_arguments_exit_1():
     assert workshop.main(["run", "acme/analytics#12"]) == 1  # --skills is required
-    assert workshop.main(["run", "not-a-ref", "--skills", "add-field"]) == 1
-    assert workshop.main(["run", "acme/analytics#12", "--skills", "../add-field"]) == 1
+    assert workshop.main(["run", "not-a-ref", "--skills", "add-fields"]) == 1
+    assert workshop.main(["run", "acme/analytics#12", "--skills", "../add-fields"]) == 1
     assert workshop.main(["run", "acme/analytics#12", "--skills", "workshop"]) == 1
 
 
@@ -28,7 +28,7 @@ def test_claude_command_confines_the_agent(fake):
         return cmd[cmd.index(name) + 1]
 
     home = fake.home / ".workshop"
-    skill = workshop.SKILLS_DIR / "add-field" / "SKILL.md"
+    skill = workshop.SKILLS_DIR / "add-fields" / "SKILL.md"
     job = workshop.Job(
         "acme/analytics",
         12,
@@ -79,16 +79,16 @@ def test_agent_gets_no_secrets(fake, monkeypatch):
 
 def test_target_repo_skills(fake):
     skill = "---\nname: from-the-repo\n---\n"
-    names = ("workshop", "add-field", "triage")
+    names = ("workshop", "add-fields", "triage")
     fake.set(default_branch_files={f".workshop/skills/{name}/SKILL.md": skill for name in names})
-    assert fake.outcome("run", "acme/analytics#12", "--skills", "add-field,triage") == "pr-open"
+    assert fake.outcome("run", "acme/analytics#12", "--skills", "add-fields,triage") == "pr-open"
     [agent] = fake.state["agent_runs"]
     repo_skills = (
         fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
     )  # this run's copy from GitHub
     assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]  # never the repo's
-    assert f"{repo_skills / 'add-field' / 'SKILL.md'}\n" in agent["prompt"]  # the repo's replaces the tool's
-    assert str(workshop.SKILLS_DIR / "add-field") not in agent["prompt"]
+    assert f"{repo_skills / 'add-fields' / 'SKILL.md'}\n" in agent["prompt"]  # the repo's replaces the tool's
+    assert str(workshop.SKILLS_DIR / "add-fields") not in agent["prompt"]
     assert f"{repo_skills / 'triage' / 'SKILL.md'}\n" in agent["prompt"]
     assert (repo_skills / "triage" / "SKILL.md").read_text() == skill
 
@@ -132,7 +132,7 @@ def test_pr_with_green_checks(fake):
     assert "select new_field from orders" in fake.summaries()[0]
     [agent] = fake.state["agent_runs"]
     assert agent["cwd"] == str(fake.worktree.resolve())
-    for skill in ("workshop", "add-field"):
+    for skill in ("workshop", "add-fields"):
         assert str(workshop.SKILLS_DIR / skill / "SKILL.md") in agent["prompt"]
     assert fake.calls("worktree", "add", "-b", "workshop/issue-12", DEFAULT)
     [log] = (fake.home / ".workshop" / "logs" / "acme-analytics-12").glob("*.log")
@@ -177,7 +177,7 @@ def test_fix_loop(fake):
     assert run["outcome"] == "pr-open" and run["fix_attempts"] == 1
     assert [(skill["name"], skill["from"]) for skill in run["skills"]] == [
         ("workshop",) * 2,
-        ("add-field", "workshop"),
+        ("add-fields", "workshop"),
     ]
     assert (run["agent_version"], run["model"], run["turns"]) == ("0.0.1", "fake-model", 6)
     assert run["tokens"]["output"] == 200
@@ -218,7 +218,7 @@ def test_score(fake, capsys, pr, ending):
     assert fake.run("score", "acme/analytics") == 0
     headers, _, row = capsys.readouterr().out.splitlines()
     scores = dict(zip(headers.strip("| ").split(" | "), row.strip("| ").split(" | "), strict=True))
-    assert scores["Skills"] == "add-field" and scores["Jobs"] == "1" and scores[ending] == "1"
+    assert scores["Skills"] == "add-fields" and scores["Jobs"] == "1" and scores[ending] == "1"
     assert (scores["Runs"], scores["Questions"], scores["Fix attempts"]) == ("2", "1", "1")
     assert scores["API-equivalent cost"] == "$0.75"  # three agent runs
     assert scores["Per merged PR"] == ("$0.75" if ending.startswith("Merged") else "-")
@@ -301,7 +301,7 @@ def score_row(fake, capsys) -> dict:
 
 FORGED = {
     "finished": "2999-01-01T00:00:00Z",
-    "skills": [{"name": "workshop"}, {"name": "add-field"}],
+    "skills": [{"name": "workshop"}, {"name": "add-fields"}],
     "outcome": "pr-open",
     "fix_attempts": 0,
     "denied_tool_calls": {},

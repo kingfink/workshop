@@ -1,5 +1,5 @@
 # Requested fields can have different destinations; each must arrive without changing existing data.
-skills = ["add-field"]
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
 

@@ -1,6 +1,6 @@
 ---
 name: workshop
-description: Rules for every workshop job, which turns one GitHub issue into one pull request in a target repository. Always used together with the job's own skill, such as add-field.
+description: Rules for every workshop job, which turns one GitHub issue into one pull request in a target repository. Always used together with the job's own skill, such as add-fields.
 ---
 
 # Workshop job

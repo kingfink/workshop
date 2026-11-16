@@ -1047,7 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="work one issue")
     run.add_argument("ref", metavar="OWNER/REPO#ISSUE")
-    run.add_argument("--skills", required=True, help="comma-separated, e.g. add-field")
+    run.add_argument("--skills", required=True, help="comma-separated, e.g. add-fields")
     run.add_argument("--max-fix-attempts", type=int, default=2)
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     run.add_argument("--checks-timeout", type=int, default=300, help="seconds to wait for checks each round")

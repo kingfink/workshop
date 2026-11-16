@@ -1,5 +1,5 @@
 ---
-name: add-field
+name: add-fields
 description: Add one or more fields that already exist in loaded source tables through to the models and semantic layer. Use in a workshop job when the issue asks to add or expose fields.
 ---
 

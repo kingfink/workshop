@@ -1,5 +1,5 @@
 # A downstream column is calculated from the field: removing it would change other columns, so the agent should ask.
-skills = ["remove-field"]
+skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 question = "point out that `lifetime_value` in `dim_customers` is calculated from `amount`"

@@ -39,10 +39,12 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
         workshop_eval,
         "dbt_build",
         lambda fixture, project: (
-            next(builds, (True, "")) if project.parent.name.startswith("add-field-plan-tier-") else (True, "")
+            next(builds, (True, ""))
+            if project.parent.name.startswith("add-fields-plan-tier-")
+            else (True, "")
         ),
     )
-    expected = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-field-plan-tier")
+    expected = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
     monkeypatch.setattr(workshop_eval, "query", lambda fixture, project, sql: expected["queries"][0]["rows"])
     monkeypatch.setattr(workshop_eval, "snapshot", lambda fixture, project: fixture.baseline)
     monkeypatch.setattr(workshop_eval, "judge", lambda question, criterion, cwd: "contact_email" in question)
@@ -91,21 +93,21 @@ def eval_results(tmp_path) -> dict:
 
 def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
     runs = agent_that(tmp_path, monkeypatch)
-    assert workshop.main(["eval", "--skill", "add-field"]) == 0
+    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
     results = eval_results(tmp_path)
-    assert results["add-field-two-emails"]["passed"]  # the judge accepted the question
-    assert not results["add-field-not-loaded"]["passed"]
-    assert "does not say that no loaded table" in results["add-field-not-loaded"]["why"]
-    plan_tier = results["add-field-plan-tier"]
+    assert results["add-fields-two-emails"]["passed"]  # the judge accepted the question
+    assert not results["add-fields-not-loaded"]["passed"]
+    assert "does not say that no loaded table" in results["add-fields-not-loaded"]["why"]
+    plan_tier = results["add-fields-plan-tier"]
     assert plan_tier["passed"] and plan_tier["fix_attempts"] == 1  # the first build failed
-    assert results["add-field-misnamed-source"]["passed"]
+    assert results["add-fields-misnamed-source"]["passed"]
     [fix] = [prompt for prompt, _ in runs if prompt.startswith("Your change has failing checks.")]
     assert "Compilation Error" in fix
     [phone] = [prompt for prompt, _ in runs if "# Add phone number to dim_customers" in prompt]
     assert "This job has no github tools" in phone
-    share = f"{2 / len(workshop_eval.load_cases('add-field')):.2f}"  # an equal share of the $2 default
+    share = f"{2 / len(workshop_eval.load_cases('add-fields')):.2f}"  # an equal share of the $2 default
     assert runs[0][1] == ["--tools", "Bash,Read,Edit,Write", "--max-budget-usd", share]
-    assert "| add-field-plan-tier | 1 of 1 |" in capsys.readouterr().out
+    assert "| add-fields-plan-tier | 1 of 1 |" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -121,8 +123,8 @@ def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
 )
 def test_eval_refuses_to_build(tmp_path, monkeypatch, extra, why):
     agent_that(tmp_path, monkeypatch, extra=extra)
-    assert workshop.main(["eval", "--skill", "add-field"]) == 0
-    result = eval_results(tmp_path)["add-field-plan-tier"]
+    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
+    result = eval_results(tmp_path)["add-fields-plan-tier"]
     assert not result["passed"] and why in result["why"] and result["fix_attempts"] == 0
 
 
@@ -135,12 +137,12 @@ def test_eval_budget(tmp_path, monkeypatch, capsys):
 
 def test_eval_rejects_tiers_assigned_to_the_wrong_customers(tmp_path, monkeypatch):
     agent_that(tmp_path, monkeypatch)
-    case = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-field-plan-tier")
+    case = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
     wrong = [row[:] for row in case["queries"][0]["rows"]]
     wrong[0][1], wrong[1][1] = wrong[1][1], wrong[0][1]  # the old distribution check would pass
     monkeypatch.setattr(workshop_eval, "query", lambda *args: wrong)
-    assert workshop.main(["eval", "--skill", "add-field"]) == 0
-    result = eval_results(tmp_path)["add-field-plan-tier"]
+    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
+    result = eval_results(tmp_path)["add-fields-plan-tier"]
     assert not result["passed"] and "returned" in result["why"]
 
 
@@ -148,7 +150,7 @@ def test_eval_rejects_tiers_assigned_to_the_wrong_customers(tmp_path, monkeypatc
 def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
     agent_that(tmp_path, monkeypatch)
     case = next(
-        case for case in workshop_eval.load_cases(None) if case["name"] == "add-field-multiple-ambiguous"
+        case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-multiple-ambiguous"
     )
     monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
     ask = workshop.invoke_agent
@@ -181,7 +183,7 @@ def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
         return result
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)
-    assert workshop.main(["eval", "--skill", "add-field"]) == 0
+    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
     result = eval_results(tmp_path)[case["name"]]
     assert result["passed"] is (change is None)
     assert result["why"] == ("asked" if change is None else "changed files before asking")

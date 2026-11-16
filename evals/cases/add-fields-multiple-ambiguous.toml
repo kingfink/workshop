@@ -1,5 +1,5 @@
 # One clear source does not permit a partial change while another requested field is ambiguous.
-skills = ["add-field"]
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true

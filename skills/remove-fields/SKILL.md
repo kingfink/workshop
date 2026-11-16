@@ -1,5 +1,5 @@
 ---
-name: remove-field
+name: remove-fields
 description: Remove one or more fields from the models and semantic layer. Use in a workshop job when the issue asks to remove, drop or stop exposing fields.
 ---
 

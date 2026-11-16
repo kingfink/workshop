@@ -1,5 +1,5 @@
 # The source column mixes formats for one boolean: the skill says to ask how to clean it.
-skills = ["add-field"]
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 question = "ask how to handle the mixed `is_vip` values, such as `Y`, `yes`, `1` and blanks"

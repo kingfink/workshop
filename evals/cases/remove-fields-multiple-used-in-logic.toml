@@ -1,5 +1,5 @@
 # A safe passthrough removal must wait when another requested removal affects a calculation.
-skills = ["remove-field"]
+skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true

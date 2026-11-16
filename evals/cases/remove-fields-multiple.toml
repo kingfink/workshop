@@ -1,5 +1,5 @@
 # Each requested field has its own removal scope; preserve it upstream and preserve all other columns.
-skills = ["remove-field"]
+skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
 

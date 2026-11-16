@@ -1,5 +1,5 @@
-# The field is loaded, clean and has one obvious source column: the agent should change the models.
-skills = ["add-field"]
+# The issue names a nonexistent table. Find the loaded source instead of declaring the field unavailable.
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
 
@@ -8,8 +8,8 @@ stg_customers = { plan_tier = "VARCHAR" }
 dim_customers = { plan_tier = "VARCHAR" }
 
 [issue]
-title = "Add plan tier to dim_customers"
-body = "We want to break customers down by plan. Please add a `plan_tier` column to `dim_customers`."
+title = "Expose customer plan tier"
+body = "Add `plan_tier` from `raw.customer_profiles` to `dim_customers`."
 
 [[queries]]
 sql = "select customer_id, plan_tier from main.dim_customers order by customer_id"
