@@ -120,15 +120,33 @@ A run that is killed before it can clean up, such as by a power cut, leaves the 
 
 ## Roadmap ideas
 
+### Generic job skill
+
+One `other` skill for issues that no job skill covers. It adds one rule to the `workshop` skill: before editing, state what done is and the check that will prove it, such as an existing test, a build or a query, and ask if there is none. The pull request names the kind of work, so `score` shows which kinds recur and how they end. Start with jobs that end in a pull request; questions need the answer outcome.
+
+### Answer outcome
+
+Let a job end in a comment on the issue with no pull request, beside a question and a pull request. The agent leaves the answer in the handoff directory and the tool posts it. Reports, surveys and questions need this.
+
 ### Triage and follow-up issues
 
 Review issues, tag them with the applicable job skills, and flag missing information, prerequisites or work to split into separate issues. Let `run` use those labels to select skills, combining compatible skills for one change. The owner still chooses which issues to queue.
 
 At the end of a job, let the agent hand off follow-up work for workshop to create as linked issues in the same or another relevant repository. Include the reason, a way to verify completion, suggested skills and any dependency on the original change. Reuse existing issues on reruns, and send follow-ups through triage before the owner queues them. Follow-ups that depend on the original change wait until that prerequisite is satisfied.
 
+Test skill selection with a routing eval: show a model only each skill's name and description, and check that each eval case's issue goes to its skill and that issues no skill covers go to `other`. When a description changes, compare the results with the base branch's.
+
+### Tool skills
+
+A skill that says how to use one tool, such as a BI tool's command line, used together with a job skill. The target repo supplies read-only credentials and the network host in its `.claude/settings.json`. Start with lookups: check which dashboards and semantic-layer definitions use a field before `remove-fields` removes it, and query an added field through the semantic layer. Writes to a tool that is not changed through the repository need a way to publish other than the pull request.
+
+### Skills from past jobs
+
+A job on this repository that writes a new skill. The issue cites past `other` jobs of one kind, and the agent writes the skill and its eval cases from those jobs and from what the owner changed before merging. The owner runs the new evals.
+
 ### Update dependencies
 
-One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and successful runs without changes.
+One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and the answer outcome.
 
 ### Jobs from telemetry
 
@@ -136,13 +154,22 @@ Investigate failures from sources such as dbt, Modal or PostHog and propose dedu
 
 ### More job skills
 
+Try each kind of work with the generic job skill first. Write a skill only for the kinds that fail or keep being merged after changes.
+
 - Fix a failing test or pipeline: reproduce the failure, repair the cause and verify the fix.
 - Add data tests: turn stated expectations into checks for uniqueness, nulls, relationships or accepted values.
 - Rename a field or model: update references, tests and documentation while preserving behavior.
 - Add a metric: implement a supplied business definition in the existing models or semantic layer.
 - Retire an unused model or source: check for consumers, remove it and clean up references.
 - Optimize a slow query: preserve results and demonstrate improvement under comparable conditions.
+- Fix a wrong answer from the semantic layer's AI: add the missing synonym or context and show that the question is now answered correctly.
 
 ### Verify content and analysis
 
-Check a report, dashboard, query or specified documents against named sources and explicit definitions. Identify conflicting statements, recalculate selected figures and flag unsupported claims. Mark each check as verified, contradicted or unable to verify, with evidence. Start with report numbers; these jobs need a successful report-only outcome.
+Check a report, dashboard, query or specified documents against named sources and explicit definitions. Identify conflicting statements, recalculate selected figures and flag unsupported claims. Mark each check as verified, contradicted or unable to verify, with evidence. Start with report numbers; these jobs need the answer outcome.
+
+### Evals
+
+- Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
+- Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
+- Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
