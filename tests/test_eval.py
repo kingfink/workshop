@@ -142,3 +142,46 @@ def test_eval_rejects_tiers_assigned_to_the_wrong_customers(tmp_path, monkeypatc
     assert workshop.main(["eval", "--skill", "add-field"]) == 0
     result = eval_results(tmp_path)["add-field-plan-tier"]
     assert not result["passed"] and "returned" in result["why"]
+
+
+@pytest.mark.parametrize("change", [None, "committed", "staged", "unstaged", "untracked"])
+def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
+    agent_that(tmp_path, monkeypatch)
+    case = next(
+        case for case in workshop_eval.load_cases(None) if case["name"] == "add-field-multiple-ambiguous"
+    )
+    monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
+    ask = workshop.invoke_agent
+
+    def agent(job, prompt):
+        result = ask(job, prompt)
+        if change:
+            model = (
+                job.worktree
+                / "models"
+                / "marts"
+                / ("partial.sql" if change == "untracked" else "dim_customers.sql")
+            )
+            model.write_text("select 1 as partial_change\n")
+            if change in ("committed", "staged"):
+                workshop.git("-C", job.worktree, "add", "--all")
+            if change == "committed":
+                workshop.git(
+                    "-C",
+                    job.worktree,
+                    "-c",
+                    "user.name=agent",
+                    "-c",
+                    "user.email=agent@localhost",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "Partial change before asking",
+                )
+        return result
+
+    monkeypatch.setattr(workshop, "invoke_agent", agent)
+    assert workshop.main(["eval", "--skill", "add-field"]) == 0
+    result = eval_results(tmp_path)[case["name"]]
+    assert result["passed"] is (change is None)
+    assert result["why"] == ("asked" if change is None else "changed files before asking")

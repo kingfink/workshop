@@ -1,0 +1,20 @@
+# Requested fields can have different destinations; each must arrive without changing existing data.
+skills = ["add-field"]
+fixture = "dbt-duckdb"
+expect = "pull-request"
+
+[add_columns]
+stg_customers = { plan_tier = "VARCHAR", email = "VARCHAR", contact_email = "VARCHAR" }
+dim_customers = { plan_tier = "VARCHAR", email = "VARCHAR" }
+
+[issue]
+title = "Expose customer plan and email fields"
+body = "Add `plan_tier` and `email` from `raw.customers` through to `dim_customers`. Also expose `raw.customers.contact_email` in `stg_customers` only. Keep the source column names."
+
+[[queries]]
+sql = "select customer_id, plan_tier, email from main.dim_customers order by customer_id"
+rows = [[1, "pro", "c01@example.com"], [2, "free", "c02@example.com"], [3, "team", "c03@example.com"], [4, "free", "c04@example.com"], [5, "pro", "c05@example.com"], [6, "free", "c06@example.com"], [7, "team", "c07@example.com"], [8, "free", "c08@example.com"], [9, "pro", "c09@example.com"], [10, "free", "c10@example.com"], [11, "team", "c11@example.com"], [12, "pro", "c12@example.com"]]
+
+[[queries]]
+sql = "select customer_id, plan_tier, email, coalesce(contact_email, '<null>') from main.stg_customers order by customer_id"
+rows = [[1, "pro", "c01@example.com", "billing01@example.com"], [2, "free", "c02@example.com", "c02@example.com"], [3, "team", "c03@example.com", "accounts03@example.com"], [4, "free", "c04@example.com", "<null>"], [5, "pro", "c05@example.com", "finance05@example.com"], [6, "free", "c06@example.com", "c06@example.com"], [7, "team", "c07@example.com", "ops07@example.com"], [8, "free", "c08@example.com", "<null>"], [9, "pro", "c09@example.com", "billing09@example.com"], [10, "free", "c10@example.com", "c10@example.com"], [11, "team", "c11@example.com", "accounts11@example.com"], [12, "pro", "c12@example.com", "billing12@example.com"]]

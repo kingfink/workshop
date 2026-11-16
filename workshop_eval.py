@@ -242,6 +242,12 @@ def grade(job: Job, case: dict, fixture: Fixture) -> tuple[bool, str, str]:
                 "changed files instead of asking" if changed else "neither asked nor changed anything",
                 "",
             )
+        if case.get("unchanged"):
+            worktree_args = ("-C", job.clone, f"--work-tree={job.worktree}")
+            edited = git(*worktree_args, "diff", "--name-only", "main").stdout.strip()
+            added = git(*worktree_args, "ls-files", "--others", "--exclude-standard").stdout.strip()
+            if changed or edited or added:
+                return False, "changed files before asking", ""
         if "question" not in case:
             return True, "asked", ""
         good = judge(question, case["question"], job.clone.parent)  # not where the agent can write
