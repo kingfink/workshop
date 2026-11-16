@@ -10,7 +10,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 | Term | Meaning |
 |---|---|
-| Skill | One kind of work the tool handles end to end, defined by a `SKILL.md` file, such as `add-field`. |
+| Skill | One kind of work the tool handles end to end, defined by a `SKILL.md` file, such as `add-fields`. |
 | Owner | The person who queues issues, answers questions and reviews pull requests. |
 | Target repo | The repository being changed. |
 
@@ -29,7 +29,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
-./workshop.py run '<owner>/<repo>#<issue>' --skills add-field
+./workshop.py run '<owner>/<repo>#<issue>' --skills add-fields
 ```
 
 ```bash
@@ -37,7 +37,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
-./workshop.py eval --skill add-field
+./workshop.py eval --skill add-fields
 ```
 
 `init` creates the labels below in a target repo. It is safe to rerun.

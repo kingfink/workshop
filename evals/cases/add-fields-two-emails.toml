@@ -1,5 +1,5 @@
 # Two loaded columns fit the request: the skill says to ask.
-skills = ["add-field"]
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 question = "offer both `email` and `contact_email` as options"

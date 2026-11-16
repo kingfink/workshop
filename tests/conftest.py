@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import workshop  # noqa: E402
 
 FAKE = Path(__file__).resolve().parent / "fake.py"
-RUN = ["run", "acme/analytics#12", "--skills", "add-field"]
+RUN = ["run", "acme/analytics#12", "--skills", "add-fields"]
 DEFAULT = "d" * 40  # the default branch's commit on the fake GitHub
 
 

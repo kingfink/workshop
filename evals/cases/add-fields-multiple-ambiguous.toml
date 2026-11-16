@@ -1,0 +1,10 @@
+# One clear source does not permit a partial change while another requested field is ambiguous.
+skills = ["add-fields"]
+fixture = "dbt-duckdb"
+expect = "question"
+unchanged = true
+question = "ask which source to use for the customer's email address, offering both `email` and `contact_email` as options"
+
+[issue]
+title = "Add plan tier and customer email to dim_customers"
+body = "Add `plan_tier` from `raw.customers` and each customer's email address to `dim_customers` for a survey broken down by plan."

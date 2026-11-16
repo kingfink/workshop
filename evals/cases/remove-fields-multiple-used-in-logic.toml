@@ -1,0 +1,10 @@
+# A safe passthrough removal must wait when another requested removal affects a calculation.
+skills = ["remove-fields"]
+fixture = "dbt-duckdb"
+expect = "question"
+unchanged = true
+question = "point out that removing `amount` affects the calculation of `lifetime_value` in `dim_customers` and ask how to handle that dependency"
+
+[issue]
+title = "Remove order timestamp and amount"
+body = "Remove `ordered_at` and `amount` from `stg_orders` and everything downstream of it."

@@ -1,5 +1,5 @@
 # No loaded table has the field, which the skill puts out of scope: the agent should ask, not invent a source.
-skills = ["add-field"]
+skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 question = "say that no loaded table has a phone number"

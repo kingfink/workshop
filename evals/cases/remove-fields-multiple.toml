@@ -1,0 +1,20 @@
+# Each requested field has its own removal scope; preserve it upstream and preserve all other columns.
+skills = ["remove-fields"]
+fixture = "dbt-duckdb"
+expect = "pull-request"
+
+[remove_columns]
+stg_customers = ["customer_name"]
+dim_customers = ["customer_name", "country"]
+
+[issue]
+title = "Remove customer name and country"
+body = "Remove `customer_name` from `stg_customers` and its downstream models. Remove `country` from `dim_customers` only."
+
+[[queries]]
+sql = "select column_name from information_schema.columns where table_schema = 'main' and table_name = 'dim_customers' order by ordinal_position"
+rows = [["customer_id"], ["created_at"], ["order_count"], ["lifetime_value"]]
+
+[[queries]]
+sql = "select column_name from information_schema.columns where table_schema = 'main' and table_name = 'stg_customers' order by ordinal_position"
+rows = [["customer_id"], ["created_at"], ["country"]]
