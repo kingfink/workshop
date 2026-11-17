@@ -15,6 +15,8 @@ Use the supplied call history, logs, and repository context to assess every obse
 
 Recovery need not explain the original cause. Do not invent a cause to justify no action. State whether repeated failures indicate outstanding work even if one later call succeeded.
 
+For repeated unrecovered failures whose logs omit the error detail, request that detail before recommending a repair or another run.
+
 If a field disappeared, establish whether it was intentionally retired, renamed, or stopped loading before recommending removal. Read the scope of any repair skill you recommend. Do not recommend `remove-fields` for a column used in joins, filters, calculations or metrics without identifying the decision that skill requires.
 
 Do not edit repository files, run jobs, deploy, change data, or create issues. Recommend work only.
@@ -33,3 +35,7 @@ Write `assessment.json` in the handoff directory named in the prompt:
 ```
 
 Use one of the three status values. Cover every failed function; if any needs action, report `action-required` and include any unresolved uncertainty about the others. Otherwise report `unable-to-assess` if any cannot be assessed. Summarize evidence without copying secrets or source records into the report. Name an applicable repair skill in the next step only when its scope covers the proposed work.
+
+- Keep `summary` to at most 40 words: the failure, impact and any uncertainty.
+- Keep `next_step` to at most 40 words: the immediate action and its verification. Omit lists of repair skills that do not apply.
+- Put detailed counts, code references and supporting reasoning in `evidence` instead of repeating them in the summary or next step.

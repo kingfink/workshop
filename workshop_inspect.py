@@ -232,8 +232,14 @@ def assess(job: Job, evidence: dict) -> dict:
     return result
 
 
-def report(repo: str, evidence: dict, result: dict) -> str:
+def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
     label = STATUSES[result["status"]] + (" (incomplete coverage)" if result["gaps"] else "")
+    if not verbose:
+        lines = [f"{repo}: {label}", "", result["summary"]]
+        if result["gaps"]:
+            lines += ["", "Coverage gaps:", *(f"- {gap}" for gap in result["gaps"])]
+        lines += ["", f"Next step: {result['next_step']}"]
+        return "\n".join(lines) + "\n"
     lines = [
         f"# {repo}: {label}",
         "",
@@ -320,7 +326,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     job = inspection_job(args.repo, base, clone, worktree, run_dir, args)
     evidence = collect(config, since, until)
     result = assess(job, evidence)
-    output = report(args.repo, evidence, result)
+    output = report(args.repo, evidence, result, verbose=True)
     (run_dir / "report.md").write_text(output, encoding="utf-8")
     save_record(
         {
@@ -335,6 +341,6 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         },
         home / "logs" / "inspections.jsonl",
     )
-    print(output)
-    print(f"Evidence and report: {run_dir}")
+    print(output if args.verbose else report(args.repo, evidence, result))
+    print(f"Report: {run_dir / 'report.md'}")
     return {"ok": 0, "ok-after-review": 0, "action-required": 2, "unable-to-assess": 1}[result["status"]]

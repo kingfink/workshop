@@ -125,7 +125,7 @@ def test_partial_collection_keeps_known_failures_visible(tmp_path, monkeypatch):
     evidence = inspect.collect(config, SINCE, UNTIL)
     result = inspect.assess(job(tmp_path), evidence)
     assert result["status"] == "action-required" and result["gaps"]
-    output = inspect.report("acme/analytics", evidence, result)
+    output = inspect.report("acme/analytics", evidence, result, verbose=True)
     assert "incomplete coverage" in output and "not authorized" in output and "failure: 1" in output
 
 
@@ -242,6 +242,24 @@ def test_manual_command_reports_without_github_writes(fake, tmp_path, monkeypatc
     assert not fake.calls("push") and not fake.calls("pr", "create")
     records = list((fake.home / ".workshop/logs").glob("*-inspect/*/report.md"))
     assert len(records) == 1
+    assert "Modal profile" not in output and "Input states" not in output
+    assert "Report:" in output and str(records[0]) in output
+    assert "Modal profile" in records[0].read_text() and "Input states" in records[0].read_text()
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_failed_inspection_keeps_evidence_in_saved_report(fake, monkeypatch, capsys, verbose):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG})
+    collector(monkeypatch, [call("failure")], logs="")
+    agent(monkeypatch, status="action-required")
+    assert fake.run("inspect", "acme/analytics", *(["--verbose"] if verbose else [])) == 2
+    output = capsys.readouterr().out
+    saved = next((fake.home / ".workshop/logs").glob("*-inspect/*/report.md")).read_text()
+    for text in ("Action required", "incomplete coverage", "Modal returned no logs", "Next step:"):
+        assert text in output and text in saved
+    for text in ("fc-recovered", "Modal profile", "Input states"):
+        assert (text in output) is verbose
+        assert text in saved
 
 
 @pytest.mark.parametrize("contents", [None, b"not TOML", b"\xff"])
