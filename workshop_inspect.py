@@ -77,6 +77,8 @@ def read_config(text: str | None) -> dict:
 
 
 def time_window(since: str, now: datetime) -> tuple[str, str]:
+    # Modal's calls endpoint rejects fractional seconds in --since and --until.
+    now = now.replace(microsecond=0)
     match = re.fullmatch(r"([1-9][0-9]*)(m|h|d)", since)
     if not match:
         raise ToolError("--since must be a positive duration, such as 30m, 24h or 7d")

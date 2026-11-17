@@ -212,7 +212,7 @@ def test_bad_config_is_rejected(text):
 
 
 def test_time_window_is_fixed_utc_and_bounded():
-    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 3, microsecond=478744, tzinfo=timezone.utc)
     assert inspect.time_window("24h", now) == (SINCE, UNTIL)
     for since in ("0h", "tomorrow", "999999d"):
         with pytest.raises(workshop.ToolError):
