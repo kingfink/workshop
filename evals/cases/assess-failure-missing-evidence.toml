@@ -1,0 +1,20 @@
+# Knowing that the next call succeeded is insufficient when the failed workload is unknown.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "unable-to-assess"
+criterion = "explain that recovery or outstanding impact cannot be established from call states alone and request logs or workload coverage evidence rather than declare no action or invent a root cause"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 1
+gaps = ["Modal returned no logs for the failed function"]
+counts = {failure = 1, success = 1}
+calls = [{function_call_id = "fc-failed", status = "failure", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-next", status = "success", enqueued_at = "2026-01-02T12:00:00Z"}]
+logs = ""

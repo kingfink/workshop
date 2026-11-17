@@ -4,13 +4,15 @@
 
 `workshop` is a command-line tool that has a coding agent turn a GitHub issue into a pull request. It stops when the pull request's checks pass or a person is needed, and never merges.
 
+It also inspects configured Modal functions and reports whether their failures need action. Inspections publish nothing and make no repairs.
+
 It is for routine changes with obvious, verifiable solutions, such as adding a field or bringing docs up to date, so people can spend their time on harder work. Inspired by [Gumloop's Software Factory](https://www.gumloop.com/engineering/software-factory).
 
 ## Vocabulary
 
 | Term | Meaning |
 |---|---|
-| Skill | One kind of work the tool handles end to end, defined by a `SKILL.md` file, such as `add-fields`. |
+| Skill | Instructions for one kind of agent work, defined by a `SKILL.md` file, such as `add-fields` or `assess-failure`. |
 | Owner | The person who queues issues, answers questions and reviews pull requests. |
 | Target repo | The repository being changed. |
 
@@ -37,6 +39,10 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
+./workshop.py inspect <owner>/<repo> --since 24h
+```
+
+```bash
 ./workshop.py eval --skill add-fields
 ```
 
@@ -59,9 +65,39 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 
 `score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
 
+### inspect
+
+`inspect` reads a target repo's default branch and its `.workshop/inspect.toml`:
+
+```toml
+[modal]
+profile = "acme"
+environment = "main"
+functions = ["analytics/sync"]
+```
+
+Install and authenticate the [Modal CLI](https://modal.com/docs/reference/cli). The reader is tested with Modal 1.6.4 and requires `modal function calls --since --until --json` and `modal function logs`. The named profile must belong to the intended Modal workspace; credentials stay in Modal's local configuration or the calling shell, never in the repository.
+
+The tool reads all inputs enqueued within the window for each configured function and classifies their reported states. Failures, timeouts, termination, initialization failures, internal failures and memory evictions trigger log collection and the `assess-failure` skill. Successful calls do not cancel earlier failures. The agent reads the captured evidence and relevant repository files, and writes an assessment; it has no shell, network tools, GitHub tools or service credentials. The current checkout may differ from the deployed revision.
+
+| Result | Exit code | Meaning |
+|---|---|---|
+| OK | `0` | All returned inputs succeeded. No agent was needed. |
+| OK after review | `0` | The agent found recovery with no outstanding action. |
+| Action required | `2` | The report gives the next step and how to verify it. |
+| Unable to assess | `1` | Evidence is missing or inconclusive, or the inspection could not finish. |
+
+No inputs, unfinished inputs, unknown states, failed reads, or truncated logs prevent an OK result. Known work can still produce Action required alongside coverage gaps. This checks reported inputs for the configured functions, not missed schedules, freshness, failures hidden by application code, or functions from previous deployments that have different IDs. Input states are observed when collected; the window filters enqueue times, not completion times.
+
+`--since` defaults to `24h`, accepts positive minutes, hours or days, and is limited to `7d`. `--agent-timeout` defaults to `300` seconds. Each Modal command has a 120-second timeout. More than 10,000 inputs per function requires a smaller window; logs retain at most the last 60,000 characters, with truncation reported. Calls use explicit time bounds, not Modal's default tail of recent inputs.
+
+The report goes to stdout and `~/.workshop/logs/<repo>-inspect/<run>/report.md`. That directory also holds the evidence and agent log, which may contain sensitive source output. Run records go in `~/.workshop/logs/inspections.jsonl`. Repeating an inspection collects fresh evidence without changing GitHub or Modal. Inspections do not appear in `score`.
+
 ### eval
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
+
+Inspection cases provide made-up Modal evidence and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to Modal.
 
 | Option | Default | |
 |---|---|---|
@@ -90,7 +126,7 @@ CI runs the tests and checks lint and formatting without changing files. The eva
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
-- The agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host.
+- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.

@@ -13,8 +13,12 @@ def test_eval_cases_are_valid():
     for case in cases:
         assert workshop.find_skills(case["skills"], workshop_eval.EVALS_DIR)  # the tool's own skills
         assert (workshop_eval.EVALS_DIR / "fixtures" / case["fixture"] / "repo").is_dir()
-        assert case["expect"] in ("pull-request", "question")
-        assert case["issue"]["title"] and case["issue"]["body"]
+        if case.get("kind") == "inspection":
+            assert case["expect"] in ("ok-after-review", "action-required", "unable-to-assess")
+            assert case["observations"]["functions"] and case["criterion"]
+        else:
+            assert case["expect"] in ("pull-request", "question")
+            assert case["issue"]["title"] and case["issue"]["body"]
 
 
 def agent_that(tmp_path, monkeypatch, *, extra=None):
