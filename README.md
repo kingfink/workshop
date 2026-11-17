@@ -184,7 +184,9 @@ A job on this repository that writes a new skill. The issue cites past `other` j
 
 ### Update dependencies
 
-One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and the answer outcome.
+One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with existing Dependabot PRs: review compatibility, resolve conflicts and dependency-related failures, run the repository's required checks, and report ready to merge, blocked, or needing an owner decision. This requires support for jobs on existing PRs.
+
+Add a batch mode that works through open Dependabot PRs and returns one consolidated report. PR preparation is a separate task from `inspect`; merging remains a separate owner action. Dependency surveys need the answer outcome.
 
 ### Jobs from telemetry
 
