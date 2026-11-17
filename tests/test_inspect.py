@@ -219,10 +219,22 @@ def test_time_window_is_fixed_utc_and_bounded():
             inspect.time_window(since, now)
 
 
-def test_manual_command_reports_without_github_writes(fake, monkeypatch, capsys):
-    fake.set(default_branch_files={inspect.CONFIG: CONFIG})
+@pytest.mark.parametrize("local_config", [False, True])
+def test_manual_command_reports_without_github_writes(fake, tmp_path, monkeypatch, capsys, local_config):
+    args = []
+    if local_config:
+        path = tmp_path / "inspect.toml"
+        path.write_text(CONFIG)
+        args = ["--config", str(path)]
+
+        def no_remote_config(*args):
+            pytest.fail("local config should not require a config on the default branch")
+
+        monkeypatch.setattr(inspect, "github_file", no_remote_config)
+    else:
+        fake.set(default_branch_files={inspect.CONFIG: CONFIG})
     collector(monkeypatch, [call("success")])
-    assert fake.run("inspect", "acme/analytics") == 0
+    assert fake.run("inspect", "acme/analytics", *args) == 0
     output = capsys.readouterr().out
     assert "acme/analytics: OK" in output and "Next step:" in output
     assert fake.state["agent_runs"] == []
@@ -230,6 +242,23 @@ def test_manual_command_reports_without_github_writes(fake, monkeypatch, capsys)
     assert not fake.calls("push") and not fake.calls("pr", "create")
     records = list((fake.home / ".workshop/logs").glob("*-inspect/*/report.md"))
     assert len(records) == 1
+
+
+@pytest.mark.parametrize("contents", [None, b"not TOML", b"\xff"])
+def test_unreadable_or_invalid_local_config_stops_before_collection(fake, tmp_path, capsys, contents):
+    path = tmp_path / "inspect.toml"
+    if contents is not None:
+        path.write_bytes(contents)
+    assert fake.run("inspect", "acme/analytics", "--config", str(path)) == 1
+    assert "inspect.toml" in capsys.readouterr().err
+    assert fake.state["calls"] == []
+
+
+def test_missing_default_branch_config_explains_local_override(fake, capsys):
+    assert fake.run("inspect", "acme/analytics") == 1
+    error = capsys.readouterr().err
+    assert "default branch" in error and "--config PATH" in error
+    assert fake.state["agent_runs"] == []
 
 
 def test_inspection_evals_grade_assessments_without_a_dbt_build(tmp_path, monkeypatch):

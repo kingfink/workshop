@@ -48,7 +48,10 @@ MAX_CALLS = 10_000
 
 def read_config(text: str | None) -> dict:
     if text is None:
-        raise ToolError(f"the target repository needs {CONFIG}; see README.md's inspect command")
+        raise ToolError(
+            f"the target repository needs {CONFIG} on its default branch; "
+            "use --config PATH to inspect with a local configuration"
+        )
     try:
         config = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -299,12 +302,20 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     since, until = time_window(args.since, datetime.now(timezone.utc))
     if args.agent_timeout <= 0:
         raise ToolError("--agent-timeout must be positive")
+    config = None
+    if args.config is not None:
+        try:
+            config_text = args.config.expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ToolError(f"could not read inspection config {args.config}: {exc}") from None
+        config = read_config(config_text)
     require_gh_login()
     home = Path.home() / ".workshop"
     name = args.repo.replace("/", "-") + "-inspect"
     clone, worktree = home / "repos" / args.repo, home / "worktrees" / name
     base = prepare_worktree(args.repo, "workshop/inspect", clone, worktree)
-    config = read_config(github_file(args.repo, base, CONFIG))
+    if config is None:
+        config = read_config(github_file(args.repo, base, CONFIG))
     run_dir = home / "logs" / name / timestamp("%Y%m%dT%H%M%S.%fZ")
     job = inspection_job(args.repo, base, clone, worktree, run_dir, args)
     evidence = collect(config, since, until)

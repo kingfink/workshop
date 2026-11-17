@@ -1080,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         "inspect", help="inspect configured Modal functions and report any action needed"
     )
     inspect.add_argument("repo", metavar="OWNER/REPO")
+    inspect.add_argument("--config", type=Path, metavar="PATH", help="use a local inspection config")
     inspect.add_argument("--since", default="24h", help="look back this long, e.g. 24h, 30m or 7d")
     inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")

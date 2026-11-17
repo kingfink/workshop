@@ -76,6 +76,8 @@ environment = "main"
 functions = ["analytics/sync"]
 ```
 
+The configuration must be on the default branch. To try a configuration before merging it, pass a local file with `./workshop.py inspect acme/analytics --config /path/to/inspect.toml`. The repository context still comes from the default branch.
+
 Install and authenticate the [Modal CLI](https://modal.com/docs/reference/cli). The reader is tested with Modal 1.6.4 and requires `modal function calls --since --until --json` and `modal function logs`. The named profile must belong to the intended Modal workspace; credentials stay in Modal's local configuration or the calling shell, never in the repository.
 
 The tool reads all inputs enqueued within the window for each configured function and classifies their reported states. Failures, timeouts, termination, initialization failures, internal failures and memory evictions trigger log collection and the `assess-failure` skill. Successful calls do not cancel earlier failures. The agent reads the captured evidence and relevant repository files, and writes an assessment; it has no shell, network tools, GitHub tools or service credentials. The current checkout may differ from the deployed revision.
