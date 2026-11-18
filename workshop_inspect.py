@@ -308,7 +308,7 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
             "States are those reported at collection time.",
             "",
             markdown_table(
-                ["Function", "Input states"],
+                ["Job", "Input states"],
                 [
                     [
                         item["function"],
@@ -326,7 +326,7 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
     if verbose:
         lines += [
             "",
-            "This checks reported inputs for the configured functions, not missed schedules, "
+            "This checks reported inputs for the configured jobs, not missed schedules, "
             "data freshness, or failures hidden by application code.",
         ]
     return "\n".join(lines) + "\n"

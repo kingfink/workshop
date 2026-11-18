@@ -4,7 +4,7 @@
 
 `workshop` is a command-line tool that has a coding agent turn a GitHub issue into a pull request. It stops when the pull request's checks pass or a person is needed, and never merges.
 
-It also inspects configured Modal functions and reports whether their failures need action. Inspections publish nothing and make no repairs.
+It also inspects configured jobs and reports whether their failures need action. Inspections publish nothing and make no repairs.
 
 It is for routine changes with obvious, verifiable solutions, such as adding a field or bringing docs up to date, so people can spend their time on harder work. Inspired by [Gumloop's Software Factory](https://www.gumloop.com/engineering/software-factory).
 
@@ -39,7 +39,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
-./workshop.py inspect <owner>/<repo> --since 24h
+./workshop.py inspect <owner>/<repo>
 ```
 
 ```bash
@@ -67,33 +67,28 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 
 ### inspect
 
-`inspect` reads a target repo's default branch and its `.workshop/inspect.toml`:
+`inspect` checks configured jobs and reports whether action is needed. It reads `.workshop/inspect.toml` and repository context from the target repo's default branch. [Modal setup and collection details](docs/modal-inspection.md) describe the supported source.
 
-```toml
-[modal]
-profile = "acme"
-environment = "main"
-functions = ["analytics/sync"]
+```bash
+./workshop.py inspect <owner>/<repo>
 ```
 
-The configuration must be on the default branch. To try a configuration before merging it, pass a local file with `./workshop.py inspect acme/analytics --config /path/to/inspect.toml`. The repository context still comes from the default branch.
+`--since 24h` is optional: the default is the last 24 hours. Use `--since 48h` for a longer window; positive durations in minutes, hours or days are accepted, up to `7d`.
 
-Install and authenticate the [Modal CLI](https://modal.com/docs/reference/cli). The reader is tested with Modal 1.6.4 and requires `modal function calls --since --until --json` and `modal function logs`. The named profile must belong to the intended Modal workspace; credentials stay in Modal's local configuration or the calling shell, never in the repository.
-
-The tool reads all inputs enqueued within the window for each configured function and classifies their reported states. Failures, timeouts, termination, initialization failures, internal failures and memory evictions trigger log collection and the `assess-failure` skill. It saves call-specific logs for failures and subsequent successful calls, collecting failures first and deduplicating call IDs. Empty call logs trigger one function-level fallback, with the coverage gap retained. Successful calls do not cancel earlier failures. The agent searches the saved logs, reads relevant excerpts and repository files, and writes an assessment; it has no shell, network tools, GitHub tools or service credentials. The current checkout may differ from the deployed revision.
+Reported states determine whether failures occurred. When they did, `assess-failure` uses the logs and repository context to decide whether work remains. A later successful run alone does not establish recovery.
 
 | Result | Exit code | Meaning |
 |---|---|---|
-| OK | `0` | All returned inputs succeeded. No agent was needed. |
+| OK | `0` | No failures or coverage gaps were reported. No agent was needed. |
 | OK after review | `0` | The agent found recovery with no outstanding action. |
 | Action required | `2` | The report gives the next step and how to verify it. |
 | Unable to assess | `1` | Evidence is missing or inconclusive, or the inspection could not finish. |
 
-No inputs, unfinished inputs, unknown states, failed reads, or truncated logs prevent an OK result. Known work can still produce Action required alongside coverage gaps. This checks reported inputs for the configured functions, not missed schedules, freshness, failures hidden by application code, or functions from previous deployments that have different IDs. Input states are observed when collected; the window filters enqueue times, not completion times.
+Missing or incomplete evidence prevents an OK result. This checks observed runs; missed schedules and data freshness are outside its scope.
 
-`--since` defaults to `24h`, accepts positive minutes, hours or days, and is limited to `7d`. `--agent-timeout` defaults to `300` seconds. Each Modal command has a 120-second timeout. More than 10,000 inputs per function requires a smaller window. Log collection stops at 20 captures per inspection and 2 MB per file; any skipped calls or incomplete files are reported as coverage gaps. Calls and logs use explicit time bounds, not Modal's default tail of recent entries.
+The terminal shows the outcome, a short summary and the next step. The full report, evidence and agent log are saved under `~/.workshop/logs/<repo>-inspect/<run>/`; `--verbose` also prints the full report. Inspections make no changes to services or GitHub and do not appear in `score`.
 
-The terminal shows the outcome, a short summary, coverage gaps and the next step. The full report is saved to `~/.workshop/logs/<repo>-inspect/<run>/report.md`; `--verbose` also prints it. That directory holds the evidence and agent log, which may contain sensitive source output. Repeating an inspection collects fresh evidence without changing GitHub or Modal. Inspections do not appear in `score`.
+Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
 
 ### eval
 
@@ -190,7 +185,9 @@ Add a batch mode that works through open Dependabot PRs and returns one consolid
 
 ### Jobs from telemetry
 
-Investigate failures from sources such as dbt, Modal or PostHog and propose deduplicated GitHub issues with evidence and a way to verify the fix. The owner queues them for the existing issue-to-PR flow. Start with one source and one reproducible failure class; confirm the result after deployment.
+Let `inspect` create or reuse an issue when `assess-failure` identifies outstanding work. The assessment proposes the issue; Workshop publishes it with the evidence, next step, verification and an applicable repair skill. Recovered failures create no issue. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue. Reuse issues across inspections of the same unresolved problem.
+
+The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed.
 
 ### More job skills
 

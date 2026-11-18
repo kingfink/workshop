@@ -1077,13 +1077,11 @@ def main(argv: list[str] | None = None) -> int:
     score = sub.add_parser("score", help="how a target repo's jobs ended, by skill")
     score.add_argument("repo", metavar="OWNER/REPO")
     score.add_argument("--since", default="", help="only runs from this date on, e.g. 2026-10-01")
-    inspect = sub.add_parser(
-        "inspect", help="inspect configured Modal functions and report any action needed"
-    )
+    inspect = sub.add_parser("inspect", help="inspect configured jobs and report any action needed")
     inspect.add_argument("repo", metavar="OWNER/REPO")
     inspect.add_argument("--config", type=Path, metavar="PATH", help="use a local inspection config")
     inspect.add_argument("--verbose", action="store_true", help="print the full inspection report")
-    inspect.add_argument("--since", default="24h", help="look back this long, e.g. 24h, 30m or 7d")
+    inspect.add_argument("--since", default="24h", help="look back this long (default: 24h); e.g. 30m or 7d")
     inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
