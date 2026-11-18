@@ -93,7 +93,7 @@ No inputs, unfinished inputs, unknown states, failed reads, or truncated logs pr
 
 `--since` defaults to `24h`, accepts positive minutes, hours or days, and is limited to `7d`. `--agent-timeout` defaults to `300` seconds. Each Modal command has a 120-second timeout. More than 10,000 inputs per function requires a smaller window; logs retain at most the last 60,000 characters, with truncation reported. Calls use explicit time bounds, not Modal's default tail of recent inputs.
 
-The terminal shows the outcome, a short summary, coverage gaps and the next step. The full report is saved to `~/.workshop/logs/<repo>-inspect/<run>/report.md`; `--verbose` also prints it. That directory holds the evidence and agent log, which may contain sensitive source output. Run records go in `~/.workshop/logs/inspections.jsonl`. Repeating an inspection collects fresh evidence without changing GitHub or Modal. Inspections do not appear in `score`.
+The terminal shows the outcome, a short summary, coverage gaps and the next step. The full report is saved to `~/.workshop/logs/<repo>-inspect/<run>/report.md`; `--verbose` also prints it. That directory holds the evidence and agent log, which may contain sensitive source output. Repeating an inspection collects fresh evidence without changing GitHub or Modal. Inspections do not appear in `score`.
 
 ### eval
 

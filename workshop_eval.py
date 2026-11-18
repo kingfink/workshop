@@ -340,6 +340,10 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         attempts += 1
         run(fix_prompt(job, None, ["dbt build"], log))
     shutil.rmtree(worktree / ".venv", ignore_errors=True)  # large, and not needed to review the run
+    return eval_result(job, case, passed, why, attempts)
+
+
+def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0) -> dict:
     return {
         "finished": timestamp(),
         "case": case["name"],
@@ -347,7 +351,7 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         "why": why,
         "fix_attempts": attempts,
         "skills": skill_records(job.skills),
-        "run_dir": str(run_dir),
+        "run_dir": str(job.log_path.parent),
         "seconds": {"agent": round(job.agent_s)},
         **agent_usage(job.log_path),
     }
@@ -365,30 +369,16 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
     shutil.copytree(EVALS_DIR / "fixtures" / case["fixture"] / "repo", worktree)
     job = inspection_job("evals/inspection", "fixture", worktree, worktree, run_dir, args)
     job.agent_args = ["--max-budget-usd", f"{budget:.2f}"]
-    before = {
-        str(path.relative_to(worktree)): path.read_bytes() for path in worktree.rglob("*") if path.is_file()
-    }
+    before = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
     result = assess(job, case["observations"])
-    after = {
-        str(path.relative_to(worktree)): path.read_bytes() for path in worktree.rglob("*") if path.is_file()
-    }
+    after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
     passed = result["status"] == case["expect"] and before == after
     why = result["status"] if before == after else "changed repository files"
     if passed:
         passed = judge(json.dumps(result), case["criterion"], run_dir, label="assessment")
         if not passed:
             why = "decision matched, but the explanation or next step did not meet the criterion"
-    return {
-        "finished": timestamp(),
-        "case": case["name"],
-        "passed": passed,
-        "why": why,
-        "fix_attempts": 0,
-        "skills": skill_records(job.skills),
-        "run_dir": str(run_dir),
-        "seconds": {"agent": round(job.agent_s)},
-        **agent_usage(job.log_path),
-    }
+    return eval_result(job, case, passed, why)
 
 
 def cmd_eval(args: argparse.Namespace) -> int:

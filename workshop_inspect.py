@@ -12,16 +12,13 @@ from workshop import (
     SKILLS_DIR,
     Job,
     ToolError,
-    agent_usage,
     github_file,
     handoff_text,
     markdown_table,
     parse_issue_ref,
     prepare_worktree,
     require_gh_login,
-    save_record,
     sh,
-    skill_records,
     timestamp,
 )
 
@@ -234,62 +231,48 @@ def assess(job: Job, evidence: dict) -> dict:
 
 def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
     label = STATUSES[result["status"]] + (" (incomplete coverage)" if result["gaps"] else "")
-    if not verbose:
-        lines = [f"{repo}: {label}", "", result["summary"]]
-        if result["gaps"]:
-            lines += ["", "Coverage gaps:", *(f"- {gap}" for gap in result["gaps"])]
-        lines += ["", f"Next step: {result['next_step']}"]
-        return "\n".join(lines) + "\n"
-    lines = [
-        f"# {repo}: {label}",
-        "",
-        result["summary"],
-        "",
-        f"Modal profile `{evidence['profile']}`, environment `{evidence['environment']}`. "
-        f"Inputs enqueued from {evidence['since']} to {evidence['until']} (exclusive). "
-        "States are those reported at collection time.",
-        "",
-        markdown_table(
-            ["Function", "Input states"],
-            [
+    lines = [f"{'# ' if verbose else ''}{repo}: {label}", "", result["summary"]]
+    if verbose:
+        lines += [
+            "",
+            f"Modal profile `{evidence['profile']}`, environment `{evidence['environment']}`. "
+            f"Inputs enqueued from {evidence['since']} to {evidence['until']} (exclusive). "
+            "States are those reported at collection time.",
+            "",
+            markdown_table(
+                ["Function", "Input states"],
                 [
-                    item["function"],
-                    ", ".join(f"{state}: {n}" for state, n in item["counts"].items()) or "No data",
-                ]
-                for item in evidence["functions"]
-            ],
-        ),
-    ]
-    if result["evidence"]:
-        lines += ["", "Evidence:", "", *(f"- {item}" for item in result["evidence"])]
+                    [
+                        item["function"],
+                        ", ".join(f"{state}: {n}" for state, n in item["counts"].items()) or "No data",
+                    ]
+                    for item in evidence["functions"]
+                ],
+            ),
+        ]
+        if result["evidence"]:
+            lines += ["", "Evidence:", "", *(f"- {item}" for item in result["evidence"])]
     if result["gaps"]:
         lines += ["", "Coverage gaps:", "", *(f"- {gap}" for gap in result["gaps"])]
-    lines += [
-        "",
-        f"Next step: {result['next_step']}",
-        "",
-        "This checks reported inputs for the configured functions, not missed schedules, "
-        "data freshness, or failures hidden by application code.",
-    ]
+    lines += ["", f"Next step: {result['next_step']}"]
+    if verbose:
+        lines += [
+            "",
+            "This checks reported inputs for the configured functions, not missed schedules, "
+            "data freshness, or failures hidden by application code.",
+        ]
     return "\n".join(lines) + "\n"
 
 
 def inspection_job(
-    repo: str,
-    base: str,
-    clone: Path,
-    worktree: Path,
-    run_dir: Path,
-    args: argparse.Namespace,
-    skills: list[Path] | None = None,
+    repo: str, base: str, clone: Path, worktree: Path, run_dir: Path, args: argparse.Namespace
 ) -> Job:
-    run_dir.mkdir(parents=True, exist_ok=True)
     handoff = run_dir / "handoff"
-    handoff.mkdir()
+    handoff.mkdir(parents=True)
     return Job(
         repo,
         0,
-        skills or [SKILLS_DIR / "assess-failure" / "SKILL.md"],
+        [SKILLS_DIR / "assess-failure" / "SKILL.md"],
         "",
         base,
         clone,
@@ -328,19 +311,6 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     result = assess(job, evidence)
     output = report(args.repo, evidence, result, verbose=True)
     (run_dir / "report.md").write_text(output, encoding="utf-8")
-    save_record(
-        {
-            "finished": timestamp(),
-            "repo": args.repo,
-            "base": base,
-            "outcome": result["status"],
-            "skills": skill_records(job.skills),
-            "since": since,
-            "until": until,
-            **agent_usage(job.log_path),
-        },
-        home / "logs" / "inspections.jsonl",
-    )
     print(output if args.verbose else report(args.repo, evidence, result))
     print(f"Report: {run_dir / 'report.md'}")
     return {"ok": 0, "ok-after-review": 0, "action-required": 2, "unable-to-assess": 1}[result["status"]]
