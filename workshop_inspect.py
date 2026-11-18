@@ -112,44 +112,79 @@ def modal_command(config: dict, command: str, function: str, since: str, until: 
     return args
 
 
-def capture_log(command: list[str], path: Path, timeout: float = 120) -> bool:
-    """Stream a bounded log to disk. Keep partial evidence on failure; return whether it has content."""
+def capture_log(command: list[str], path: Path, timeout: float = 120) -> tuple[bool, str]:
+    """Save stdout as evidence; return its presence and bounded CLI stderr. Keep partial logs on failure."""
     deadline = time.monotonic() + timeout
     size, has_content = 0, False
+    diagnostics = b""
     with path.open("wb") as output, selectors.DefaultSelector() as ready:
         try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except FileNotFoundError:
             raise ToolError(f"{command[0]} is not installed") from None
         with process:
             try:
-                ready.register(process.stdout, selectors.EVENT_READ)
-                while True:
+                ready.register(process.stdout, selectors.EVENT_READ, True)
+                ready.register(process.stderr, selectors.EVENT_READ, False)
+                while ready.get_map():
                     remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not ready.select(remaining):
+                    events = ready.select(max(0, remaining))
+                    if remaining <= 0 or not events:
                         raise ToolError(f"log capture timed out after {timeout:g}s")
-                    chunk = os.read(process.stdout.fileno(), min(65_536, MAX_LOG_BYTES - size + 1))
-                    if not chunk:
-                        break
-                    output.write(chunk[: MAX_LOG_BYTES - size])
-                    size += len(chunk)
-                    has_content |= bool(chunk.strip())
-                    if size > MAX_LOG_BYTES:
-                        raise ToolError(f"log capture stopped at {MAX_LOG_BYTES} bytes; file is incomplete")
+                    for stream, _ in events:
+                        chunk = os.read(stream.fd, 65_536)
+                        if not chunk:
+                            ready.unregister(stream.fileobj)
+                        elif stream.data:
+                            output.write(chunk[: MAX_LOG_BYTES - size])
+                            size += len(chunk)
+                            has_content |= bool(chunk.strip())
+                            if size > MAX_LOG_BYTES:
+                                raise ToolError(
+                                    f"log capture stopped at {MAX_LOG_BYTES} bytes; file is incomplete"
+                                )
+                        else:
+                            diagnostics = (diagnostics + chunk)[-1000:]
                 if process.wait(timeout=max(0, deadline - time.monotonic())):
-                    raise ToolError(f"log command exited with code {process.returncode}; see captured output")
-            except subprocess.TimeoutExpired:
-                raise ToolError(f"log capture timed out after {timeout:g}s") from None
+                    raise ToolError(f"log command exited with code {process.returncode}")
+            except (ToolError, subprocess.TimeoutExpired) as exc:
+                message = (
+                    str(exc) if isinstance(exc, ToolError) else f"log capture timed out after {timeout:g}s"
+                )
+                detail = diagnostics.decode("utf-8", errors="replace").strip()
+                raise ToolError(message + (f"; CLI stderr: {detail}" if detail else "")) from None
             finally:
                 if process.poll() is None:
                     process.kill()
-    return has_content
+    return has_content, diagnostics.decode("utf-8", errors="replace").strip()
+
+
+def selected_calls(calls: list[dict]) -> list[dict]:
+    """Keep failures and the next success after each failure, in chronological order."""
+    selected, awaiting_recovery = [], False
+    for call in calls:
+        if call["status"] in FAILURES:
+            selected.append(call)
+            awaiting_recovery = True
+        elif call["status"] == "success" and awaiting_recovery:
+            selected.append(call)
+            awaiting_recovery = False
+    return selected
+
+
+def save_call_history(item: dict, calls: list[dict], path: Path) -> None:
+    path.write_text("".join(json.dumps(call) + "\n" for call in calls), encoding="utf-8")
+    item["history_path"] = str(path)
+    item["calls"] = selected_calls(calls)
 
 
 def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
     log_dir = run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    history_dir = run_dir / "history"
+    history_dir.mkdir()
     captured = 0
+    captures = []
 
     def fetch_log(item: dict, call_id: str = "") -> bool:
         nonlocal captured
@@ -163,7 +198,10 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
         )
         label = call_id or "function-level fallback"
         try:
-            if not capture_log(command, path):
+            has_content, diagnostics = capture_log(command, path)
+            if diagnostics:
+                item["gaps"].append(f"{label}: CLI stderr: {diagnostics}")
+            if not has_content:
                 item["gaps"].append(f"{label}: Modal returned no logs")
                 return True
         except ToolError as exc:
@@ -177,7 +215,7 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
         "environment": config["environment"],
         "functions": [],
     }
-    for name in config["functions"]:
+    for index, name in enumerate(config["functions"]):
         item = {"function": name, "calls": [], "counts": {}, "failures": 0, "gaps": [], "log_files": []}
         evidence["functions"].append(item)
         try:
@@ -194,7 +232,7 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
             if len(calls) > MAX_CALLS:
                 raise ToolError(f"more than {MAX_CALLS} inputs; inspect a smaller window")
             calls.sort(key=lambda call: datetime.fromisoformat(call["enqueued_at"]))
-            item["calls"] = calls
+            save_call_history(item, calls, history_dir / f"{index:03}.jsonl")
             item["counts"] = dict(Counter(call["status"] for call in calls))
             item["failures"] = sum(count for state, count in item["counts"].items() if state in FAILURES)
             unknown = set(item["counts"]) - FAILURES - PENDING - {"success"}
@@ -208,18 +246,22 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
             item["gaps"].append(f"could not read call history: {str(exc)[-1000:]}")
         if not item["failures"]:
             continue
-        first_failure = next(i for i, call in enumerate(calls) if call["status"] in FAILURES)
-        selected = dict.fromkeys(
-            [call["function_call_id"] for call in calls if call["status"] in FAILURES]
-            + [call["function_call_id"] for call in calls[first_failure:] if call["status"] == "success"]
-        )
-        fallback = False
-        for index, call_id in enumerate(selected):
-            if captured == MAX_LOG_FILES:
-                item["gaps"].append(f"log capture limit reached; {len(selected) - index} calls not collected")
-                break
-            fallback |= fetch_log(item, call_id)
-        if fallback and captured < MAX_LOG_FILES:
+        seen = set()
+        for call in sorted(item["calls"], key=lambda call: call["status"] not in FAILURES):
+            call_id = call["function_call_id"]
+            if call_id not in seen:
+                captures.append((call["status"] not in FAILURES, item, call_id))
+                seen.add(call_id)
+    skipped, fallback = Counter(), set()
+    for _, item, call_id in sorted(captures, key=lambda capture: capture[0]):
+        if captured == MAX_LOG_FILES:
+            skipped[item["function"]] += 1
+        elif fetch_log(item, call_id):
+            fallback.add(item["function"])
+    for item in evidence["functions"]:
+        if count := skipped[item["function"]]:
+            item["gaps"].append(f"log capture limit reached; {count} selected calls not collected")
+        if item["function"] in fallback and captured < MAX_LOG_FILES:
             fetch_log(item)
     return evidence
 

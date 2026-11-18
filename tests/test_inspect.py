@@ -35,7 +35,7 @@ def collector(monkeypatch, calls, logs="source logs"):
         path.write_bytes(value.encode()[: inspect.MAX_LOG_BYTES])
         if len(value.encode()) > inspect.MAX_LOG_BYTES:
             raise workshop.ToolError("log capture stopped; file is incomplete")
-        return bool(value.strip())
+        return bool(value.strip()), ""
 
     monkeypatch.setattr(inspect, "sh", read)
     monkeypatch.setattr(inspect, "capture_log", capture)
@@ -185,6 +185,8 @@ def test_inspection_agent_has_no_shell_or_service_credentials(tmp_path, monkeypa
     writes = [rule for rule in flag("--allowedTools").split(",") if rule.startswith(("Write", "Edit"))]
     assert writes == [f"Edit(/{inspection.handoff / 'assessment.json'})"]
     assert f"Read(/{inspection.log_path.parent / 'logs'}/**)" in flag("--allowedTools")
+    assert f"Read(/{inspection.log_path.parent / 'history'}/**)" in flag("--allowedTools")
+    assert not {"Grep", "Glob"} & set(flag("--allowedTools").split(","))
     assert "MODAL_TOKEN_SECRET" not in workshop.agent_env(inspection)
     assert (inspection.log_path.parent / "env.sh").read_text() == ""
 
@@ -244,6 +246,67 @@ def test_capture_count_limit_is_shared_across_functions(tmp_path, monkeypatch):
     assert all(item["gaps"] for item in evidence["functions"])
 
 
+def test_frequent_successes_do_not_exhaust_capture_budget(tmp_path, monkeypatch):
+    history = [call("failure", "fc-failed", 0)]
+    history += [call("success", f"fc-{hour}", hour) for hour in range(1, 24)]
+    commands = collector(monkeypatch, history)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
+    assert len(commands) == 3  # history, failed run, first recovery
+    assert not evidence["functions"][0]["gaps"]
+    agent(monkeypatch)
+    assert inspect.assess(job(tmp_path), evidence)["status"] == "ok-after-review"
+
+
+def test_manifest_keeps_counts_and_selected_calls_with_full_history_on_disk(tmp_path, monkeypatch):
+    history = [call("success", f"fc-{index}", 0) for index in range(1440)]
+    history[0]["status"] = "failure"
+    collector(monkeypatch, history)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    item = evidence["functions"][0]
+    assert item["counts"] == {"failure": 1, "success": 1439}
+    assert [c["function_call_id"] for c in item["calls"]] == ["fc-0", "fc-1"]
+    assert [json.loads(line) for line in Path(item["history_path"]).read_text().splitlines()] == history
+    assert len(json.dumps(evidence, indent=2)) < 2000
+
+
+def test_all_jobs_failures_are_captured_before_recovery_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(inspect, "MAX_LOG_FILES", 2)
+    commands = collector(monkeypatch, [call("failure"), call("success", "fc-later", 12)])
+    config = inspect.read_config(CONFIG.replace('["imports/sync"]', '["imports/sync", "other/sync"]'))
+    evidence = inspect.collect(config, SINCE, UNTIL, tmp_path)
+    logs = [command for command in commands if command[2] == "logs"]
+    assert [command[3] for command in logs] == ["imports/sync", "other/sync"]
+    assert all(command[-1] == "fc-example" for command in logs)
+    assert all("1 selected calls" in item["gaps"][0] for item in evidence["functions"])
+
+
+def test_each_failure_selects_its_next_success_once(tmp_path, monkeypatch):
+    history = [
+        call(state, f"fc-{hour}", hour)
+        for hour, state in enumerate(
+            ["success", "failure", "failure", "success", "success", "failure", "success", "success"]
+        )
+    ]
+    collector(monkeypatch, history)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    assert [log["call_id"] for log in evidence["functions"][0]["log_files"]] == [
+        "fc-1",
+        "fc-2",
+        "fc-5",
+        "fc-3",
+        "fc-6",
+    ]
+
+
+def test_too_many_failures_still_leave_a_real_gap(tmp_path, monkeypatch):
+    collector(monkeypatch, [call("failure", f"fc-{hour}", hour) for hour in range(24)])
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
+    assert "4 selected calls" in evidence["functions"][0]["gaps"][0]
+    agent(monkeypatch, status="action-required")
+    result = inspect.assess(job(tmp_path), evidence)
+    assert result["status"] == "action-required" and result["gaps"]
+
+
 @pytest.mark.parametrize("size", [64, 65])
 def test_streamed_log_capture_enforces_size_limit(tmp_path, monkeypatch, size):
     monkeypatch.setattr(inspect, "MAX_LOG_BYTES", 64)
@@ -253,7 +316,7 @@ def test_streamed_log_capture_enforces_size_limit(tmp_path, monkeypatch, size):
         with pytest.raises(workshop.ToolError, match="incomplete"):
             inspect.capture_log(command, path)
     else:
-        assert inspect.capture_log(command, path)
+        assert inspect.capture_log(command, path) == (True, "")
     assert path.read_bytes() == b"X" * 64
 
 
@@ -268,9 +331,42 @@ def test_streamed_log_capture_times_out_and_keeps_partial_output(tmp_path):
 def test_streamed_log_capture_preserves_command_errors(tmp_path):
     path = tmp_path / "call.log"
     command = [sys.executable, "-c", "import sys; print('access denied', file=sys.stderr); sys.exit(2)"]
-    with pytest.raises(workshop.ToolError, match="code 2"):
+    with pytest.raises(workshop.ToolError, match="code 2; CLI stderr: access denied"):
         inspect.capture_log(command, path)
-    assert "access denied" in path.read_text()
+    assert path.read_text() == ""
+
+
+def test_cli_warning_is_not_application_output(tmp_path):
+    path = tmp_path / "call.log"
+    command = [sys.executable, "-c", "import sys; print('CLI warning', file=sys.stderr)"]
+    assert inspect.capture_log(command, path) == (False, "CLI warning")
+    assert not path.read_bytes()
+
+
+def test_stderr_is_drained_and_bounded_without_polluting_logs(tmp_path):
+    path = tmp_path / "call.log"
+    command = [sys.executable, "-c", "import sys; sys.stderr.write('X' * 100000); print('job error')"]
+    assert inspect.capture_log(command, path) == (True, "X" * 1000)
+    assert path.read_text() == "job error\n"
+
+
+def test_warning_only_capture_keeps_gap_and_fetches_fallback(tmp_path, monkeypatch):
+    collector(monkeypatch, [call("failure")])
+    captures = []
+
+    def capture(command, path):
+        captures.append(command)
+        path.write_text("" if "--function-call" in command else "job error from fallback")
+        return (False, "CLI warning") if "--function-call" in command else (True, "")
+
+    monkeypatch.setattr(inspect, "capture_log", capture)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
+    item = evidence["functions"][0]
+    assert len(captures) == 2 and "--function-call" not in captures[-1]
+    assert any("CLI warning" in gap for gap in item["gaps"])
+    assert any("Modal returned no logs" in gap for gap in item["gaps"])
+    agent(monkeypatch)
+    assert inspect.assess(job(tmp_path), evidence)["status"] == "unable-to-assess"
 
 
 @pytest.mark.parametrize(

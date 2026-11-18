@@ -118,6 +118,8 @@ uv run python -m pytest -q
 
 CI runs the tests and checks lint and formatting without changing files. The eval fixture repositories have their own configuration and are excluded from Ruff.
 
+With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pytest tests/test_inspect_permissions.py` to check actual `Read`, `Grep` and `Glob` permissions against harmless files inside and outside the allowed paths. This opt-in test uses the hosted agent and is skipped by default and when `claude` is unavailable; it is separate from the skill evals.
+
 ## Security
 
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
