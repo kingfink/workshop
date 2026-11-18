@@ -2,7 +2,11 @@
 
 import argparse
 import json
+import os
 import re
+import selectors
+import subprocess
+import time
 import tomllib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -39,7 +43,8 @@ STATUSES = {
     "action-required": "Action required",
     "unable-to-assess": "Unable to assess",
 }
-MAX_LOG_CHARS = 60_000
+MAX_LOG_BYTES = 2_000_000
+MAX_LOG_FILES = 20
 MAX_CALLS = 10_000
 
 
@@ -88,7 +93,7 @@ def time_window(since: str, now: datetime) -> tuple[str, str]:
     return (now - timedelta(seconds=seconds)).isoformat(), now.isoformat()
 
 
-def modal_read(config: dict, command: str, function: str, since: str, until: str) -> str:
+def modal_command(config: dict, command: str, function: str, since: str, until: str) -> list[str]:
     args = [
         "modal",
         "function",
@@ -104,10 +109,67 @@ def modal_read(config: dict, command: str, function: str, since: str, until: str
         until,
     ]
     args += ["--json"] if command == "calls" else ["--timestamps", "--show-function-call-id"]
-    return sh(args, timeout=120).stdout
+    return args
 
 
-def collect(config: dict, since: str, until: str) -> dict:
+def capture_log(command: list[str], path: Path, timeout: float = 120) -> bool:
+    """Stream a bounded log to disk. Keep partial evidence on failure; return whether it has content."""
+    deadline = time.monotonic() + timeout
+    size, has_content = 0, False
+    with path.open("wb") as output, selectors.DefaultSelector() as ready:
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except FileNotFoundError:
+            raise ToolError(f"{command[0]} is not installed") from None
+        with process:
+            try:
+                ready.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not ready.select(remaining):
+                        raise ToolError(f"log capture timed out after {timeout:g}s")
+                    chunk = os.read(process.stdout.fileno(), min(65_536, MAX_LOG_BYTES - size + 1))
+                    if not chunk:
+                        break
+                    output.write(chunk[: MAX_LOG_BYTES - size])
+                    size += len(chunk)
+                    has_content |= bool(chunk.strip())
+                    if size > MAX_LOG_BYTES:
+                        raise ToolError(f"log capture stopped at {MAX_LOG_BYTES} bytes; file is incomplete")
+                if process.wait(timeout=max(0, deadline - time.monotonic())):
+                    raise ToolError(f"log command exited with code {process.returncode}; see captured output")
+            except subprocess.TimeoutExpired:
+                raise ToolError(f"log capture timed out after {timeout:g}s") from None
+            finally:
+                if process.poll() is None:
+                    process.kill()
+    return has_content
+
+
+def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
+    log_dir = run_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    captured = 0
+
+    def fetch_log(item: dict, call_id: str = "") -> bool:
+        nonlocal captured
+        path = log_dir / f"{captured:03}.log"
+        captured += 1
+        command = modal_command(config, "logs", item["function"], since, until)
+        if call_id:
+            command += ["--function-call", call_id]
+        item["log_files"].append(
+            {"call_id": call_id, "path": str(path), "scope": "call" if call_id else "function"}
+        )
+        label = call_id or "function-level fallback"
+        try:
+            if not capture_log(command, path):
+                item["gaps"].append(f"{label}: Modal returned no logs")
+                return True
+        except ToolError as exc:
+            item["gaps"].append(f"{label}: {exc}")
+        return False
+
     evidence = {
         "since": since,
         "until": until,
@@ -116,10 +178,10 @@ def collect(config: dict, since: str, until: str) -> dict:
         "functions": [],
     }
     for name in config["functions"]:
-        item = {"function": name, "calls": [], "counts": {}, "failures": 0, "gaps": []}
+        item = {"function": name, "calls": [], "counts": {}, "failures": 0, "gaps": [], "log_files": []}
         evidence["functions"].append(item)
         try:
-            calls = json.loads(modal_read(config, "calls", name, since, until))
+            calls = json.loads(sh(modal_command(config, "calls", name, since, until), timeout=120).stdout)
             if not isinstance(calls, list) or any(
                 not isinstance(call, dict)
                 or not isinstance(call.get("status"), str)
@@ -131,6 +193,7 @@ def collect(config: dict, since: str, until: str) -> dict:
                 raise ToolError("unrecognized Modal call history; check the installed Modal CLI version")
             if len(calls) > MAX_CALLS:
                 raise ToolError(f"more than {MAX_CALLS} inputs; inspect a smaller window")
+            calls.sort(key=lambda call: datetime.fromisoformat(call["enqueued_at"]))
             item["calls"] = calls
             item["counts"] = dict(Counter(call["status"] for call in calls))
             item["failures"] = sum(count for state, count in item["counts"].items() if state in FAILURES)
@@ -141,19 +204,23 @@ def collect(config: dict, since: str, until: str) -> dict:
                 item["gaps"].append("no inputs in this window; expected schedules are not checked")
             if PENDING & item["counts"].keys():
                 item["gaps"].append("some inputs are still pending or running")
-        except (ToolError, json.JSONDecodeError) as exc:
+        except (ToolError, ValueError, TypeError) as exc:
             item["gaps"].append(f"could not read call history: {str(exc)[-1000:]}")
         if not item["failures"]:
             continue
-        try:
-            logs = modal_read(config, "logs", name, since, until)
-            item["logs"] = logs[-MAX_LOG_CHARS:]
-            if not logs.strip():
-                item["gaps"].append("Modal returned no logs for the failed function")
-            if len(logs) > MAX_LOG_CHARS:
-                item["gaps"].append(f"logs truncated to the last {MAX_LOG_CHARS} characters")
-        except ToolError as exc:
-            item["gaps"].append(f"could not read logs: {str(exc)[-1000:]}")
+        first_failure = next(i for i, call in enumerate(calls) if call["status"] in FAILURES)
+        selected = dict.fromkeys(
+            [call["function_call_id"] for call in calls if call["status"] in FAILURES]
+            + [call["function_call_id"] for call in calls[first_failure:] if call["status"] == "success"]
+        )
+        fallback = False
+        for index, call_id in enumerate(selected):
+            if captured == MAX_LOG_FILES:
+                item["gaps"].append(f"log capture limit reached; {len(selected) - index} calls not collected")
+                break
+            fallback |= fetch_log(item, call_id)
+        if fallback and captured < MAX_LOG_FILES:
+            fetch_log(item)
     return evidence
 
 
@@ -164,6 +231,7 @@ def inspection_prompt(job: Job) -> str:
                 "Assess the observed failures in this Modal inspection. Read and follow these skills:",
                 *(str(path) for path in job.skills),
                 f"Repository: {job.repo}. Checkout commit: {job.base} (not necessarily the deployed revision).",
+                f"Repository checkout: {job.worktree}. Confine repository searches to this path.",
                 f"Read the evidence in {job.log_path.parent / 'evidence.json'}.",
                 "Read the repository's AGENTS.md if present, and relevant code and documentation.",
                 f"Repair skills are in {SKILLS_DIR} and .workshop/skills/ in the checkout.",
@@ -307,7 +375,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         config = read_config(github_file(args.repo, base, CONFIG))
     run_dir = home / "logs" / name / timestamp("%Y%m%dT%H%M%S.%fZ")
     job = inspection_job(args.repo, base, clone, worktree, run_dir, args)
-    evidence = collect(config, since, until)
+    evidence = collect(config, since, until, run_dir)
     result = assess(job, evidence)
     output = report(args.repo, evidence, result, verbose=True)
     (run_dir / "report.md").write_text(output, encoding="utf-8")

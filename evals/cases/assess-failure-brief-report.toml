@@ -14,7 +14,7 @@ environment = "main"
 [[observations.functions]]
 function = "pipeline/sync"
 failures = 2
-gaps = ["logs truncated to the last 60000 characters"]
+gaps = ["log capture stopped at 2000000 bytes; file is incomplete"]
 counts = {success = 2, failure = 2}
 calls = [{function_call_id = "fc-midnight", status = "success", enqueued_at = "2026-01-02T00:00:00Z"}, {function_call_id = "fc-morning", status = "success", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-noon", status = "failure", enqueued_at = "2026-01-02T12:00:00Z"}, {function_call_id = "fc-evening", status = "failure", enqueued_at = "2026-01-02T18:00:00Z"}]
 logs = """

@@ -1,7 +1,9 @@
 import argparse
 import json
 import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -13,21 +15,30 @@ CONFIG = '[modal]\nprofile = "example"\nenvironment = "main"\nfunctions = ["impo
 SINCE, UNTIL = "2026-01-02T00:00:00+00:00", "2026-01-03T00:00:00+00:00"
 
 
-def call(state, identifier="fc-example"):
-    return {"status": state, "function_call_id": identifier, "enqueued_at": "2026-01-02T06:00:00Z"}
+def call(state, identifier="fc-example", hour=6):
+    return {"status": state, "function_call_id": identifier, "enqueued_at": f"2026-01-02T{hour:02}:00:00Z"}
 
 
 def collector(monkeypatch, calls, logs="source logs"):
     commands = []
 
-    def read(config, command, function, since, until):
-        commands.append((command, function, since, until))
-        value = json.dumps(calls) if command == "calls" else logs
+    def read(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(calls))
+
+    def capture(command, path):
+        commands.append(command)
+        call_id = command[command.index("--function-call") + 1] if "--function-call" in command else ""
+        value = logs.get(call_id, "source logs") if isinstance(logs, dict) else logs
         if isinstance(value, Exception):
             raise value
-        return value
+        path.write_bytes(value.encode()[: inspect.MAX_LOG_BYTES])
+        if len(value.encode()) > inspect.MAX_LOG_BYTES:
+            raise workshop.ToolError("log capture stopped; file is incomplete")
+        return bool(value.strip())
 
-    monkeypatch.setattr(inspect, "modal_read", read)
+    monkeypatch.setattr(inspect, "sh", read)
+    monkeypatch.setattr(inspect, "capture_log", capture)
     return commands
 
 
@@ -68,21 +79,21 @@ def agent(monkeypatch, status="ok-after-review", code=0):
 def test_clean_inputs_need_neither_logs_nor_agent(tmp_path, monkeypatch):
     commands = collector(monkeypatch, [call("success")])
     runs = agent(monkeypatch)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     result = inspect.assess(job(tmp_path), evidence)
     assert result["status"] == "ok" and not runs
-    assert commands == [("calls", "imports/sync", SINCE, UNTIL)]
+    assert len(commands) == 1 and commands[0][2:4] == ["calls", "imports/sync"]
 
 
 @pytest.mark.parametrize("state", sorted(inspect.FAILURES))
 def test_failures_survive_a_later_success_and_trigger_review(tmp_path, monkeypatch, state):
     commands = collector(monkeypatch, [call(state), call("success", "fc-recovered")])
     runs = agent(monkeypatch)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     result = inspect.assess(job(tmp_path), evidence)
     assert evidence["functions"][0]["failures"] == 1
     assert result["status"] == "ok-after-review" and len(runs) == 1
-    assert commands[-1][0] == "logs"
+    assert commands[-1][2] == "logs"
 
 
 @pytest.mark.parametrize(
@@ -99,30 +110,32 @@ def test_failures_survive_a_later_success_and_trigger_review(tmp_path, monkeypat
 def test_missing_incomplete_or_unknown_history_is_not_ok(tmp_path, monkeypatch, calls):
     collector(monkeypatch, calls)
     runs = agent(monkeypatch)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     result = inspect.assess(job(tmp_path), evidence)
     assert result["status"] == "unable-to-assess" and result["gaps"] and not runs
 
 
-@pytest.mark.parametrize("logs", ["", "x" * (inspect.MAX_LOG_CHARS + 1), workshop.ToolError("read failed")])
+@pytest.mark.parametrize("logs", ["", "x" * (inspect.MAX_LOG_BYTES + 1), workshop.ToolError("read failed")])
 def test_incomplete_logs_cannot_produce_a_green_result(tmp_path, monkeypatch, logs):
     collector(monkeypatch, [call("failure")], logs)
     agent(monkeypatch)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     assert inspect.assess(job(tmp_path), evidence)["status"] == "unable-to-assess"
 
 
 def test_partial_collection_keeps_known_failures_visible(tmp_path, monkeypatch):
     config = inspect.read_config(CONFIG.replace('["imports/sync"]', '["imports/sync", "other/sync"]'))
 
-    def read(config, command, function, since, until):
-        if function == "other/sync":
-            raise workshop.ToolError("not authorized")
-        return json.dumps([call("failure")]) if command == "calls" else "missing source column"
+    collector(monkeypatch, [call("failure")], "missing source column")
 
-    monkeypatch.setattr(inspect, "modal_read", read)
+    def read(command, **kwargs):
+        if command[3] == "other/sync":
+            raise workshop.ToolError("not authorized")
+        return subprocess.CompletedProcess(command, 0, json.dumps([call("failure")]))
+
+    monkeypatch.setattr(inspect, "sh", read)
     agent(monkeypatch, status="action-required")
-    evidence = inspect.collect(config, SINCE, UNTIL)
+    evidence = inspect.collect(config, SINCE, UNTIL, tmp_path / "run")
     result = inspect.assess(job(tmp_path), evidence)
     assert result["status"] == "action-required" and result["gaps"]
     output = inspect.report("acme/analytics", evidence, result, verbose=True)
@@ -132,7 +145,7 @@ def test_partial_collection_keeps_known_failures_visible(tmp_path, monkeypatch):
 def test_agent_timeout_does_not_accept_a_partial_green_report(tmp_path, monkeypatch):
     collector(monkeypatch, [call("failure")])
     agent(monkeypatch, code=124)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     result = inspect.assess(job(tmp_path), evidence)
     assert result["status"] == "unable-to-assess" and "124" in result["summary"]
 
@@ -155,7 +168,7 @@ def test_invalid_assessment_is_reported_as_incomplete(tmp_path, monkeypatch, ass
         return 0
 
     monkeypatch.setattr(workshop, "invoke_agent", invoke)
-    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
     assert inspect.assess(job(tmp_path), evidence)["status"] == "unable-to-assess"
 
 
@@ -171,28 +184,93 @@ def test_inspection_agent_has_no_shell_or_service_credentials(tmp_path, monkeypa
     assert json.loads(flag("--mcp-config")) == {"mcpServers": {}}
     writes = [rule for rule in flag("--allowedTools").split(",") if rule.startswith(("Write", "Edit"))]
     assert writes == [f"Edit(/{inspection.handoff / 'assessment.json'})"]
+    assert f"Read(/{inspection.log_path.parent / 'logs'}/**)" in flag("--allowedTools")
     assert "MODAL_TOKEN_SECRET" not in workshop.agent_env(inspection)
     assert (inspection.log_path.parent / "env.sh").read_text() == ""
 
 
-def test_modal_uses_explicit_identity_and_full_time_range(monkeypatch):
-    commands = []
-
-    def run(args, **kwargs):
-        commands.append(args)
-        return subprocess.CompletedProcess(args, 0, "[]")
-
-    monkeypatch.setattr(inspect, "sh", run)
+def test_modal_uses_explicit_identity_and_full_time_range():
     config = inspect.read_config(CONFIG)
-    inspect.modal_read(config, "calls", "imports/sync", SINCE, UNTIL)
-    inspect.modal_read(config, "logs", "imports/sync", SINCE, UNTIL)
-    for command in commands:
+    for kind in ("calls", "logs"):
+        command = inspect.modal_command(config, kind, "imports/sync", SINCE, UNTIL)
         assert command[:2] == ["modal", "function"]
         assert "--tail" not in command and "--follow" not in command
         assert command[command.index("--profile") + 1] == "example"
         assert command[command.index("--env") + 1] == "main"
         assert command[command.index("--since") + 1] == SINCE
         assert command[command.index("--until") + 1] == UNTIL
+
+
+def test_call_logs_are_deduplicated_and_include_later_recovery(tmp_path, monkeypatch):
+    history = [
+        call("success", "fc-before", 0),
+        call("failure", "fc-failed", 6),
+        call("failure", "fc-failed", 6),
+        call("success", "fc-recovered", 12),
+    ]
+    commands = collector(monkeypatch, history[::-1])
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    logs = evidence["functions"][0]["log_files"]
+    assert [item["call_id"] for item in logs] == ["fc-failed", "fc-recovered"]
+    assert all(item["scope"] == "call" and Path(item["path"]).exists() for item in logs)
+    assert [c[c.index("--function-call") + 1] for c in commands[1:]] == ["fc-failed", "fc-recovered"]
+
+
+def test_early_error_survives_long_logs_without_an_incomplete_result(tmp_path, monkeypatch):
+    logs = "Database Error: missing permission\n" + "routine progress\n" * 5000
+    collector(monkeypatch, [call("failure")], logs)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    item = evidence["functions"][0]
+    assert not item["gaps"] and "logs" not in item
+    assert Path(item["log_files"][0]["path"]).read_text() == logs
+
+
+def test_empty_call_logs_have_labelled_fallback_and_keep_the_gap(tmp_path, monkeypatch):
+    collector(monkeypatch, [call("failure")], {"fc-example": "", "": "container initialization error"})
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
+    item = evidence["functions"][0]
+    assert [entry["scope"] for entry in item["log_files"]] == ["call", "function"]
+    assert "initialization error" in Path(item["log_files"][1]["path"]).read_text()
+    agent(monkeypatch)
+    assert inspect.assess(job(tmp_path), evidence)["status"] == "unable-to-assess"
+
+
+def test_capture_count_limit_is_shared_across_functions(tmp_path, monkeypatch):
+    monkeypatch.setattr(inspect, "MAX_LOG_FILES", 1)
+    commands = collector(monkeypatch, [call("failure"), call("success", "fc-later", 12)])
+    config = inspect.read_config(CONFIG.replace('["imports/sync"]', '["imports/sync", "other/sync"]'))
+    evidence = inspect.collect(config, SINCE, UNTIL, tmp_path)
+    assert sum(command[2] == "logs" for command in commands) == 1
+    assert all(item["gaps"] for item in evidence["functions"])
+
+
+@pytest.mark.parametrize("size", [64, 65])
+def test_streamed_log_capture_enforces_size_limit(tmp_path, monkeypatch, size):
+    monkeypatch.setattr(inspect, "MAX_LOG_BYTES", 64)
+    path = tmp_path / "call.log"
+    command = [sys.executable, "-c", f"import sys; sys.stdout.write('X' * {size})"]
+    if size > 64:
+        with pytest.raises(workshop.ToolError, match="incomplete"):
+            inspect.capture_log(command, path)
+    else:
+        assert inspect.capture_log(command, path)
+    assert path.read_bytes() == b"X" * 64
+
+
+def test_streamed_log_capture_times_out_and_keeps_partial_output(tmp_path):
+    path = tmp_path / "call.log"
+    command = [sys.executable, "-I", "-S", "-c", "import time; print('started', flush=True); time.sleep(5)"]
+    with pytest.raises(workshop.ToolError, match="timed out"):
+        inspect.capture_log(command, path, timeout=0.5)
+    assert path.read_text() == "started\n"
+
+
+def test_streamed_log_capture_preserves_command_errors(tmp_path):
+    path = tmp_path / "call.log"
+    command = [sys.executable, "-c", "import sys; print('access denied', file=sys.stderr); sys.exit(2)"]
+    with pytest.raises(workshop.ToolError, match="code 2"):
+        inspect.capture_log(command, path)
+    assert "access denied" in path.read_text()
 
 
 @pytest.mark.parametrize(

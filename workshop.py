@@ -410,6 +410,7 @@ def claude_command(job: Job) -> list[str]:
             f"Read(/{SKILLS_DIR}/**)",
             *(f"Read(/{path.parent}/**)" for path in job.skills),
             f"Read(/{job.log_path.parent / 'evidence.json'})",
+            f"Read(/{job.log_path.parent / 'logs'}/**)",
             f"Edit(/{job.handoff / 'assessment.json'})",
             "Glob",
             "Grep",

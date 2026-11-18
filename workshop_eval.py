@@ -4,6 +4,7 @@ Only `./workshop.py eval` imports this. The test project and its grading are dbt
 """
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -370,7 +371,15 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
     job = inspection_job("evals/inspection", "fixture", worktree, worktree, run_dir, args)
     job.agent_args = ["--max-budget-usd", f"{budget:.2f}"]
     before = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
-    result = assess(job, case["observations"])
+    evidence = copy.deepcopy(case["observations"])
+    (run_dir / "logs").mkdir()
+    for index, item in enumerate(evidence["functions"]):
+        path = run_dir / "logs" / f"{index:03}.log"
+        logs = item.pop("logs", "")
+        logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
+        path.write_text(logs, encoding="utf-8")
+        item["log_files"] = [{"path": str(path), "scope": "function"}]
+    result = assess(job, evidence)
     after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
     passed = result["status"] == case["expect"] and before == after
     why = result["status"] if before == after else "changed repository files"
