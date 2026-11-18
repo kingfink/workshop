@@ -1,4 +1,4 @@
-"""Inspect Modal call history, and ask the agent to assess observed failures."""
+"""Inspect job history, and ask the agent to assess observed failures."""
 
 import argparse
 import json
@@ -228,7 +228,7 @@ def inspection_prompt(job: Job) -> str:
     return (
         "\n".join(
             [
-                "Assess the observed failures in this Modal inspection. Read and follow these skills:",
+                "Assess the observed job failures in this inspection. Read and follow these skills:",
                 *(str(path) for path in job.skills),
                 f"Repository: {job.repo}. Checkout commit: {job.base} (not necessarily the deployed revision).",
                 f"Repository checkout: {job.worktree}. Confine repository searches to this path.",
@@ -271,9 +271,9 @@ def assess(job: Job, evidence: dict) -> dict:
     (job.log_path.parent / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     result = {
         "status": "ok",
-        "summary": "No failed inputs were reported in the inspected window.",
+        "summary": "No failed runs were reported in the inspected window.",
         "evidence": [],
-        "next_step": "No action required for the inspected calls.",
+        "next_step": "No action required for the inspected jobs.",
     }
     if any(item["failures"] for item in evidence["functions"]):
         try:
@@ -326,7 +326,7 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
     if verbose:
         lines += [
             "",
-            "This checks reported inputs for the configured jobs, not missed schedules, "
+            "This checks reported outcomes for the configured jobs, not missed schedules, "
             "data freshness, or failures hidden by application code.",
         ]
     return "\n".join(lines) + "\n"
