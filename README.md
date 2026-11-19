@@ -102,7 +102,7 @@ Inspection cases provide made-up job histories, logs and repository context. The
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
 | `--runs` | `1` | Runs of each case. |
-| `--budget` | `2` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
+| `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 

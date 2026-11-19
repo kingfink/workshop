@@ -1091,7 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
     evals.add_argument("--runs", type=int, default=1, help="runs of each case")
-    evals.add_argument("--budget", type=float, default=2.0, help="API-equivalent dollars for all the runs")
+    evals.add_argument("--budget", type=float, default=5.0, help="API-equivalent dollars for all the runs")
     evals.add_argument("--max-fix-attempts", type=int, default=1)
     evals.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     commands = {
