@@ -1,0 +1,31 @@
+# An issue for the same failure that closed after the last failure in the window is matched, not duplicated.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "action-required"
+expect_issue = 9
+criterion = "match the issue for the missing customer key that closed after the last failure, and still give replaying the missed current-window intervals as the next step"
+
+[[issues]]
+number = 9
+title = "imports/sync fails: column customers.customer_id does not exist"
+body = "Scheduled imports/sync runs fail because customers.customer_id is missing upstream. Closed after the upstream contract was restored."
+state = "closed"
+closed_at = "2026-01-02T15:00:00Z"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 2
+gaps = []
+counts = {failure = 2}
+calls = [{function_call_id = "fc-first", status = "failure", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-second", status = "failure", enqueued_at = "2026-01-02T12:00:00Z"}]
+logs = """
+06:00 fc-first mode=current-window interval=[00:00,06:00) report build failed: column customers.customer_id does not exist
+12:00 fc-second mode=current-window interval=[06:00,12:00) report build failed: column customers.customer_id does not exist
+"""

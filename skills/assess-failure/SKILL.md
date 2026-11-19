@@ -44,3 +44,14 @@ Use one of the three status values. Cover every failed job; if any needs action,
 - Use one sentence in `summary` for the failure, impact and any uncertainty.
 - Use one sentence in `next_step` for the immediate action and its verification.
 - Put detailed counts, code references and supporting reasoning in `evidence` instead of repeating them in the summary or next step.
+
+## Issue
+
+If the prompt names a candidate issues file and you report `action-required`, add `issue` to `assessment.json`. The file lists the repository's open issues and those closed during the inspection window.
+
+- If a listed issue describes the same failure in the same job, write `{"match": <number>}`. A closed issue matches only if it closed after the last failure in the window. If unsure, propose a new issue.
+- Otherwise write `{"title": "...", "body": "..."}`: the failure, its impact, the next step and how to verify it, in under 200 words. Name a repair skill only when its scope covers the work.
+
+The issue will be public. Name only what the repository contains, such as models, columns, tests and files (`path:line` is fine), and run IDs, dates, times, run states and run counts from the evidence. Never include values that appear only in logs or data, numbers that describe the data such as row counts, traffic or subscribers, log excerpts, local paths or URLs.
+
+Before offering the issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, and that no eight words in a row match a log. Write "for example", not "e.g.". If the check fails, the owner gets no link.

@@ -364,7 +364,14 @@ def prepare_agent_env(worktree: Path) -> None:
 
 
 def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget: float) -> dict:
-    from workshop_inspect import assess, inspection_job, list_calls, save_call_history
+    from workshop_inspect import (
+        ISSUES_FILE,
+        assess,
+        inspection_job,
+        issue_lines,
+        list_calls,
+        save_call_history,
+    )
 
     worktree = run_dir / "worktree"
     shutil.copytree(EVALS_DIR / "fixtures" / case["fixture"] / "repo", worktree)
@@ -386,10 +393,19 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
             entry["path"] = str(path)
         item["log_files"] = fixtures
         list_calls(item, calls)
+    if "issues" in case:
+        (run_dir / ISSUES_FILE).write_text(json.dumps(case["issues"], indent=2), encoding="utf-8")
     result = assess(job, evidence)
     after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
     passed = result["status"] == case["expect"] and before == after
     why = result["status"] if before == after else "changed repository files"
+    if passed and "expect_issue" in case:
+        lines = issue_lines("evals/inspection", result, case["issues"], evidence, worktree)
+        wanted = "Create the issue:" if case["expect_issue"] == "new" else f"Matches #{case['expect_issue']} "
+        if not lines or not lines[0].startswith(wanted):
+            passed, why = False, f"issue: {lines[0] if lines else 'none'}"
+        elif any(value in json.dumps(result.get("issue")) for value in case.get("forbidden", [])):
+            passed, why = False, "issue text includes a forbidden value"
     if passed:
         passed = judge(json.dumps(result), case["criterion"], run_dir, label="assessment")
         if not passed:

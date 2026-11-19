@@ -336,6 +336,7 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
 
 
 def inspection_prompt(job: Job) -> str:
+    issues = job.log_path.parent / ISSUES_FILE
     return (
         "\n".join(
             [
@@ -347,6 +348,14 @@ def inspection_prompt(job: Job) -> str:
                 "Read the repository's AGENTS.md if present, and relevant code and documentation.",
                 f"Repair skills are in {SKILLS_DIR} and .workshop/skills/ in the checkout.",
                 "Read a repair skill's scope before recommending it; do not perform the repair.",
+                *(
+                    [
+                        f"Candidate issues: {issues}. "
+                        "Add an issue to the assessment as the skill's Issue section says."
+                    ]
+                    if issues.exists()
+                    else []
+                ),
                 f"Handoff directory: {job.handoff}",
             ]
         )

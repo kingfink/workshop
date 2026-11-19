@@ -739,3 +739,31 @@ def test_unreadable_issues_still_report_the_assessment(fake, monkeypatch, capsys
     assert fake.run("inspect", "acme/analytics", "--issue") == 2
     output = capsys.readouterr().out
     assert "Action required" in output and "No issue link: could not read acme/analytics's issues" in output
+
+
+@pytest.mark.parametrize(
+    "body, passed", [("Replay the failed interval.", True), ("48213 subscribers", False)]
+)
+def test_inspection_evals_grade_issue_proposals(tmp_path, monkeypatch, body, passed):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent(monkeypatch, status="action-required", issue={"title": "Sync fails", "body": body})
+    monkeypatch.setattr(workshop_eval, "judge", lambda *args, **kwargs: True)
+    case = next(
+        case
+        for case in workshop_eval.load_cases("assess-failure")
+        if case["name"] == "assess-failure-issue-private-values"
+    )
+    monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
+    workshop.main(["eval", "--skill", "assess-failure"])
+    result = json.loads((tmp_path / ".workshop/logs/evals.jsonl").read_text())
+    assert result["passed"] is passed
+
+
+def test_inspection_prompt_names_candidate_issues_only_when_fetched(tmp_path):
+    inspection = job(tmp_path)
+    assert "Candidate issues" not in inspect.inspection_prompt(inspection)
+    (inspection.log_path.parent / inspect.ISSUES_FILE).write_text("[]")
+    assert (
+        f"Candidate issues: {inspection.log_path.parent / inspect.ISSUES_FILE}"
+        in inspect.inspection_prompt(inspection)
+    )
