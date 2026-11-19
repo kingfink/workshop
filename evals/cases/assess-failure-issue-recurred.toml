@@ -4,7 +4,7 @@ skills = ["assess-failure"]
 fixture = "modal-inspection"
 expect = "action-required"
 expect_issue = "new"
-criterion = "describe the recurring missing customer key and recommend investigating or restoring the upstream contract rather than removing the field"
+criterion = "describe the recurring missing customer key and recommend investigating or restoring the upstream contract rather than removing the field, in an issue whose title puts the job and column names in backticks"
 
 [[issues]]
 number = 10

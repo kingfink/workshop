@@ -642,9 +642,13 @@ def test_publish_check_allows_ranges_column_names_and_candidate_times(tmp_path):
     known, files = inspect.known_tokens(repo, evidence, [{"number": 10, "closed_at": "2026-01-02T09:00:00Z"}])
     text = (
         "The 2026-01-02 00:00-06:00 window, interval [00:00,06:00) or 00:00–06:00, lacks `customer_id` "
-        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z, after fc-first at 06:00:00Z or 06:00Z."
+        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z, after fc-first at 06:00:00Z or 06:00Z, "
+        "in 2026-01-02T00:00:00Z-06:00:00Z."
     )
     assert inspect.unknown_tokens(text, known, files) == []
+    assert inspect.unknown_tokens("2026-01-02T00:00:00Z-48213", known, files) == [
+        "2026-01-02T00:00:00Z-48213"
+    ]
 
 
 def test_publish_check_blocks_code_beside_punctuation_and_numbers_after_words(tmp_path):
@@ -845,3 +849,18 @@ def test_publish_check_allows_words_joined_from_known_pieces(tmp_path):
         "status=pending",
         "/models/orders.sql",
     ]
+
+
+def test_publish_check_allows_words_from_candidate_issues(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    candidate = {
+        "number": 10,
+        "title": "imports/sync fails: column customers.customer_id does not exist",
+        "body": "Closed after the upstream contract was restored.",
+        "closed_at": None,
+    }
+    known, files = inspect.known_tokens(repo, evidence, [candidate])
+    assert (
+        inspect.unknown_tokens("The error `customers.customer_id does not exist` recurs.", known, files) == []
+    )
+    assert inspect.unknown_tokens("`customers.customer_id does not exist 48213`", known, files) == ["48213"]

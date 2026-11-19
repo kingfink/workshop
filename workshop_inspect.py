@@ -422,9 +422,7 @@ def assess(job: Job, evidence: dict) -> dict:
 
 EDGE = "\"'`()[]{}<>,;:!?*."  # stripped from both ends of a word
 PIECES = re.compile(r"`[^`\n]+`|[^\s`]+")  # a backtick span, or a word up to the next backtick
-PARTS = re.compile(
-    r"[.()'\"=,:/\[\]{}<>_-]"
-)  # splits a repository word, so `customer_id` and `customer` are known from `x.customer_id`
+PARTS = re.compile(r"[.()'\"=,:/\[\]{}<>_-]")  # splits a known word into known pieces
 JOINS = re.compile(
     r"[-–—,/_=]+"
 )  # joins known words, as in 00:00-06:00, accepted_values_orders_status or target=archive
@@ -441,12 +439,22 @@ def time_tokens(value: str) -> set[str]:
     except ValueError:
         return {value}
     times = {moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
-    utc = {f"{time}Z" for time in times} if moment.utcoffset() == timedelta(0) else set()
+    utc = (
+        {f"{time}Z" for time in [*times, moment.strftime("%Y-%m-%dT%H:%M:%S")]}
+        if moment.utcoffset() == timedelta(0)
+        else set()
+    )
     return {value, moment.date().isoformat(), *times, *utc}
 
 
+def text_tokens(text: str) -> set[str]:
+    """Each word, and its pieces split on punctuation, so `customer_id` and `customer` are known from `x.customer_id`."""
+    return {token for word in words(text) for token in (word, *PARTS.split(word)) if token}
+
+
 def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tuple[set[str], set[str]]:
-    """The repository's words and the run metadata, and separately the repository's file paths and names.
+    """The repository's words, the candidate issues' words, which are public and by people with push access, and the
+    run metadata; and separately the repository's file paths and names.
 
     Never the paths of saved logs or history, nor history fields other than the call ID, state and enqueue time:
     those can hold source data.
@@ -459,9 +467,7 @@ def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tupl
             if name == ".git" or path.is_symlink():
                 continue
             files |= {path.relative_to(worktree).as_posix(), name}
-            for word in words(path.read_text(encoding="utf-8", errors="replace")):
-                known.add(word)
-                known.update(part for part in PARTS.split(word) if part)
+            known |= text_tokens(path.read_text(encoding="utf-8", errors="replace"))
     known |= files
     known |= time_tokens(evidence["since"]) | time_tokens(evidence["until"])
     for item in evidence["functions"]:
@@ -476,6 +482,7 @@ def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tupl
     known.update(("function_call_id", "status", "enqueued_at"))  # the history's field names
     for issue in candidates:
         known.update((str(issue["number"]), f"#{issue['number']}"))
+        known |= text_tokens(issue.get("title", "") + "\n" + issue.get("body", ""))
         if issue.get("closed_at"):
             known |= time_tokens(issue["closed_at"])
     return known, files
@@ -483,6 +490,19 @@ def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tupl
 
 def checked(word: str) -> bool:
     return any(char.isdigit() or char in "@/_." for char in word)
+
+
+def joined(word: str, passes) -> bool:
+    """Whether `word` splits at one or more joins into pieces that each pass, as 2026-01-02T00:00:00Z-06:00:00Z does."""
+
+    def piece(start: int, end: int) -> bool:
+        return start == end or passes(word[start:end])  # an empty piece, as after a trailing _, passes
+
+    starts = [0]  # where a piece can start, after pieces that pass
+    for join in JOINS.finditer(word):
+        if any(piece(start, join.start()) for start in starts):
+            starts.append(join.end())
+    return any(piece(start, len(word)) for start in starts[1:])
 
 
 def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
@@ -504,8 +524,7 @@ def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
         for word in words(piece):
             if not (code or checked(word)) or passes(word):
                 continue
-            parts = [part for part in JOINS.split(word) if part]
-            if len(parts) > 1 and word[0] not in "/~" and all(map(passes, parts)):
+            if word[0] not in "/~" and joined(word, passes):
                 continue
             if word not in missing:
                 missing.append(word)
