@@ -439,7 +439,8 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
         lines = issue_lines("evals/inspection", result, case["issues"], evidence, worktree)
         wanted = "Create the issue:" if case["expect_issue"] == "new" else f"Matches #{case['expect_issue']} "
         if not lines or not lines[0].startswith(wanted):
-            passed, why = False, f"issue: {lines[0] if lines else 'none'}"
+            shown = [line for line in lines if line and not line.startswith("Create the issue:")] or lines[:1]
+            passed, why = False, f"issue: {' '.join(shown) or 'none'}"
         elif any(value in json.dumps(result.get("issue")) for value in case.get("forbidden", [])):
             passed, why = False, "issue text includes a forbidden value"
     if passed:

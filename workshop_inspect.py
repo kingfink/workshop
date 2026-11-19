@@ -6,6 +6,7 @@ import os
 import re
 import selectors
 import subprocess
+import sys
 import time
 import tomllib
 import urllib.parse
@@ -424,7 +425,9 @@ PIECES = re.compile(r"`[^`\n]+`|[^\s`]+")  # a backtick span, or a word up to th
 PARTS = re.compile(
     r"[.()'\"=,:/\[\]{}<>_-]"
 )  # splits a repository word, so `customer_id` and `customer` are known from `x.customer_id`
-JOINS = re.compile(r"[-–—,/_]+")  # joins known words, as in 00:00-06:00 or accepted_values_orders_status
+JOINS = re.compile(
+    r"[-–—,/_=]+"
+)  # joins known words, as in 00:00-06:00, accepted_values_orders_status or target=archive
 LINE_REF = re.compile(r"(.+):\d+(?:-\d+)?")  # a file and line, such as models/orders.sql:12
 
 
@@ -470,6 +473,7 @@ def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tupl
                 call = json.loads(line)
                 known.update((call["function_call_id"], call["status"]))
                 known |= time_tokens(call["enqueued_at"])
+    known.update(("function_call_id", "status", "enqueued_at"))  # the history's field names
     for issue in candidates:
         known.update((str(issue["number"]), f"#{issue['number']}"))
         if issue.get("closed_at"):
@@ -484,7 +488,7 @@ def checked(word: str) -> bool:
 def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
     """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order.
 
-    `path:line` passes when `path` is one of the repository's `files`. A word joined from known words by dashes, commas,
+    `path:line` passes when `path` is one of the repository's `files`. A word joined from known words by dashes, commas, =,
     slashes or underscores passes, as in 00:00-06:00 or a test name dbt builds from model and column names, unless it
     starts with / or ~ like a local path.
     """
@@ -572,7 +576,28 @@ def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict,
     link = new_issue_link(repo, issue["title"], issue["body"])
     if len(link) > MAX_LINK_CHARS:
         return [*flagged, "No issue link: the proposed issue is too long for a link; see the full report."]
-    return [*flagged, f"Create the issue: {link}"]
+    return [*flagged, *([""] if flagged else []), f"Create the issue: {link}"]
+
+
+HYPERLINK_TERMINALS = {
+    "iTerm.app",
+    "ghostty",
+    "vscode",
+    "WezTerm",
+}  # TERM_PROGRAM values that show OSC 8 links
+NEW_ISSUE_LINE = re.compile(r"(?m)^(Create the issue: )(https://\S+)$")
+
+
+def show_links(text: str, terminal: str | None) -> str:
+    """Show each new-issue link as its title, linked, in a terminal that supports hyperlinks."""
+    if terminal not in HYPERLINK_TERMINALS:
+        return text
+
+    def linked(match: re.Match) -> str:
+        [title] = urllib.parse.parse_qs(urllib.parse.urlsplit(match[2]).query)["title"]
+        return f"{match[1]}\033]8;;{match[2]}\033\\{title}\033]8;;\033\\"
+
+    return NEW_ISSUE_LINE.sub(linked, text)
 
 
 def report(
@@ -686,6 +711,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             issue = [f"No issue link: could not read {args.repo}'s issues: {unreadable}"]
     output = report(args.repo, evidence, result, verbose=True, issue=issue)
     (run_dir / "report.md").write_text(output, encoding="utf-8")
-    print(output if args.verbose else report(args.repo, evidence, result, issue=issue))
+    terminal = os.environ.get("TERM_PROGRAM") if sys.stdout.isatty() else None
+    print(show_links(output if args.verbose else report(args.repo, evidence, result, issue=issue), terminal))
     print(f"Report: {run_dir / 'report.md'}")
     return {"ok": 0, "ok-after-review": 0, "action-required": 2, "unable-to-assess": 1}[result["status"]]

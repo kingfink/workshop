@@ -619,7 +619,7 @@ def test_publish_check_allows_repository_and_run_metadata(tmp_path):
     known, files = inspect.known_tokens(repo, evidence, [{"number": 12}])
     text = (
         "`imports/sync` run fc-first failed at 06:00 on 2026-01-02 (1 failure) at "
-        "models/orders.sql:1 on `customer_email`; see #12."
+        "models/orders.sql:1 on `customer_email`; see #12. Its enqueued_at, status and function_call_id fields."
     )
     assert inspect.unknown_tokens(text, known, files) == []
 
@@ -730,7 +730,19 @@ def test_issue_lines(tmp_path, status, issue, first):
     assert lines[0].startswith(first) if first else lines == []
     if issue and "48213" in issue.get("body", ""):
         assert lines[1] == "- not in the repository or run metadata: 48213"
+        assert lines[-2:] == ["", lines[-1]]  # a blank line before the link
         assert lines[-1].startswith("Create the issue: https://github.com/acme/analytics/issues/new?")
+
+
+@pytest.mark.parametrize("terminal", ["iTerm.app", "ghostty", "vscode", None, "Apple_Terminal"])
+def test_new_issue_link_is_a_terminal_hyperlink_where_supported(terminal):
+    link = inspect.new_issue_link("acme/analytics", "Sync fails", "Rerun it.")
+    text = f"Summary\n\nCreate the issue: {link}\nReport: report.md"
+    shown = inspect.show_links(text, terminal)
+    if terminal in ("iTerm.app", "ghostty", "vscode"):
+        assert shown == text.replace(link, f"\033]8;;{link}\033\\Sync fails\033]8;;\033\\")
+    else:
+        assert shown == text
 
 
 TRUSTED = {
@@ -799,6 +811,8 @@ def test_inspection_evals_grade_issue_proposals(tmp_path, monkeypatch, body, pas
     workshop.main(["eval", "--skill", "assess-failure"])
     result = json.loads((tmp_path / ".workshop/logs/evals.jsonl").read_text())
     assert result["passed"] is passed
+    if not passed:
+        assert "48213" in result["why"]  # names the flagged word
 
 
 def test_inspection_prompt_names_candidate_issues_only_when_fetched(tmp_path):
@@ -820,13 +834,14 @@ def test_publish_check_allows_words_joined_from_known_pieces(tmp_path):
     known, files = inspect.known_tokens(repo, evidence, [])
     text = (
         "1/1 runs failed `accepted_values_orders_status__open__closed` and "
-        "relationships_orders_customer_id__customer_id__ref_dim_customers_."
+        "relationships_orders_customer_id__customer_id__ref_dim_customers_, for `status=open`."
     )
     assert inspect.unknown_tokens(text, known, files) == []
-    blocked = "orders_48213, jane_doe, `status-pending` and /models/orders.sql"
+    blocked = "orders_48213, jane_doe, `status-pending`, `status=pending` and /models/orders.sql"
     assert inspect.unknown_tokens(blocked, known, files) == [
         "orders_48213",
         "jane_doe",
         "status-pending",
+        "status=pending",
         "/models/orders.sql",
     ]
