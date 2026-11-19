@@ -101,10 +101,14 @@ Inspection cases provide made-up job histories, logs and repository context. The
 | Option | Default | |
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
+| `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
+| `--changed` | off | Only the cases whose inputs differ from where this branch left the default branch, `origin/HEAD`, counting uncommitted and new files. A case's inputs are its case file, its fixture and the `SKILL.md` of each skill it uses, the `workshop` skill included except in inspection cases. A change to `workshop.py`, `workshop_eval.py` or `workshop_inspect.py`, which hold the prompts and grading, selects every case. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
+
+`--skill`, `--case` and `--changed` combine: a case runs if it meets each one given.
 
 Each run's record goes in `~/.workshop/logs/evals.jsonl`, and its files in `~/.workshop/evals/runs/`.
 

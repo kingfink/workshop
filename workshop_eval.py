@@ -38,6 +38,7 @@ from workshop import (
 EVALS_DIR = TOOL_ROOT / "evals"
 EVAL_BRANCH = "workshop/eval"
 EVAL_TOOLS = "Bash,Read,Edit,Write"
+TOOL_CODE = ("workshop.py", "workshop_eval.py", "workshop_inspect.py")  # a change to these selects every case
 LOAD = """import duckdb, pathlib, sys
 con = duckdb.connect(sys.argv[1])
 con.execute("create schema raw")
@@ -76,6 +77,41 @@ def load_cases(skill: str | None) -> list[dict]:
         for path in sorted(EVALS_DIR.glob("cases/*.toml"))
     ]
     return [case for case in cases if skill is None or skill in case["skills"]]
+
+
+def select_cases(cases: list[dict], names: list[str], changed: set[str] | None) -> list[dict]:
+    """The cases named in `names`, if any, and of those the ones whose inputs are in `changed`, if given.
+
+    A case's inputs are its case file, its fixture, its skills and the tool's code, which holds the prompts and
+    grading.
+    """
+    if unknown := sorted(set(names) - {case["name"] for case in cases}):
+        raise ToolError(
+            f"unknown case {', '.join(unknown)}; the cases are: {', '.join(case['name'] for case in cases)}"
+        )
+
+    def inputs_changed(case: dict) -> bool:
+        skills = case["skills"] + ([] if case.get("kind") == "inspection" else ["workshop"])
+        inputs = {
+            f"evals/cases/{case['name']}.toml",
+            *TOOL_CODE,
+            *(f"skills/{name}/SKILL.md" for name in skills),
+        }
+        fixture = f"evals/fixtures/{case['fixture']}/"
+        return any(path in inputs or path.startswith(fixture) for path in changed)
+
+    return [
+        case
+        for case in cases
+        if (not names or case["name"] in names) and (changed is None or inputs_changed(case))
+    ]
+
+
+def changed_files(root: Path = TOOL_ROOT) -> set[str]:
+    """Files that differ from where this branch left the default branch, including uncommitted and new files."""
+    base = git("-C", root, "merge-base", "HEAD", "origin/HEAD").stdout.strip()
+    changed = git("-C", root, "diff", "--name-only", "--no-renames", base).stdout.splitlines()
+    return {*changed, *git("-C", root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()}
 
 
 def prepare_fixture(name: str, work: Path) -> Fixture:
@@ -417,6 +453,11 @@ def cmd_eval(args: argparse.Namespace) -> int:
     cases = load_cases(args.skill)
     if not cases:
         raise ToolError(f"no cases in {EVALS_DIR / 'cases'}{f' for {args.skill}' if args.skill else ''}")
+    names = [name.strip() for value in args.case for name in value.split(",") if name.strip()]
+    cases = select_cases(cases, names, changed_files() if args.changed else None)
+    if not cases:
+        print("No case's inputs differ from the default branch.")
+        return 0
     home = Path.home() / ".workshop"
     runs_dir = home / "evals" / "runs" / timestamp("%Y%m%dT%H%M%SZ")
     fixtures: dict[str, Fixture] = {}
