@@ -191,7 +191,7 @@ def agent(state):
     if mode == "pr":
         state["commits"] += 1
         if "has failing checks" not in prompt:
-            leave("pull-request.md", "Add new_field\n\nCloses #12\n")
+            leave("pull-request.md", state.get("pull_request", "Add new_field\n\nCloses #12\n"))
             leave("comment.md", "Run `select new_field from orders`.\n")
     elif mode == "question":
         leave("question.md", state.get("question", "Which one?\n"))

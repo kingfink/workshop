@@ -1,0 +1,10 @@
+# The model is correct and the issue gives no expected value, so no check can show a fix: the agent should ask first.
+skills = ["other"]
+fixture = "dbt-duckdb"
+expect = "question"
+unchanged = true
+question = "ask what value the requester expected"
+
+[issue]
+title = "Lifetime value looks off"
+body = "Some customers' `lifetime_value` in `dim_customers` looks off to me. Can you fix it?"

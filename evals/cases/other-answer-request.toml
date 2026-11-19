@@ -1,0 +1,10 @@
+# The issue asks for a figure, not a change, which the skill puts out of scope: the agent should ask, not edit.
+skills = ["other"]
+fixture = "dbt-duckdb"
+expect = "question"
+unchanged = true
+question = "say that the request asks for an answer rather than a change to the repository"
+
+[issue]
+title = "How many customers have never ordered?"
+body = "For the quarterly review: how many customers have never placed an order?"

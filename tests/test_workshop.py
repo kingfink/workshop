@@ -229,6 +229,33 @@ def test_score(fake, capsys, pr, ending):
 
 
 @pytest.mark.parametrize(
+    "text, kind",
+    [
+        ("Rename x\n\nBody\n\nKind: Rename  Field\nCloses #12", "rename field"),
+        ("Add\n\nKind: one\nkind: add <b>tests</b> -->", "add b tests b --"),  # the last line, and no < or >
+        ("Add\n\nKind: " + "x" * 100, "x" * 40),
+        ("Add x\n\nCloses #12", ""),
+        ("Add\n\n**Kind:** rename field", "rename field"),
+        ("Add\n\n- Kind: rename field", "rename field"),
+        ("Add\n\nKind: add manifest\n\n```yaml\nkind: Deployment\n```\n", "add manifest"),
+    ],
+    ids=["normalized", "markup", "long", "none", "bold", "list item", "code block"],
+)
+def test_pull_request_kind(text, kind):
+    assert workshop.pull_request_kind(text) == kind
+
+
+def test_score_groups_by_kind(fake, capsys):
+    fake.set(pull_request="Rename x\n\nKind: rename field\n\nCloses #12\n")
+    assert fake.outcome(*RUN) == "pr-open"
+    assert fake.runs()[0]["kind"] == "rename field"
+    fake.set(agent_mode="question")  # a later run with no pull request keeps the job's kind
+    assert fake.outcome(*RUN) == "needs-info"
+    scores = score_row(fake, capsys)
+    assert (scores["Skills"], scores["Jobs"], scores["Runs"]) == ("add-fields: rename field", "1", "2")
+
+
+@pytest.mark.parametrize(
     "checks, options, outcome, reason, validation",
     [
         ([{"build": "fail"}], [], "escalated", "still failing after 2 fix attempts", "failed"),
