@@ -280,6 +280,7 @@ class Job:
     agent_s: float = 0.0  # time spent in the agent this run
     checks_s: float = 0.0  # time spent waiting for checks this run
     pushed: str = ""  # the commit the tool last pushed this run
+    kind: str = ""  # the kind of work its pull-request.md names, such as "rename field"
     github: bool = True  # the read-only GitHub server; evals run without it
     inspection: bool = False  # read supplied evidence; write only the assessment
     agent_args: list[str] = field(
@@ -601,6 +602,18 @@ def handoff_text(job: Job, name: str) -> str:
         return file.read().strip()
 
 
+KIND = re.compile(r"^kind:(.*)$", re.I | re.M)
+
+
+def pull_request_kind(text: str) -> str:
+    """The kind of work on the last `Kind:` line of a pull request, such as "rename field", or "".
+
+    Only lowercase letters, digits, spaces and hyphens are kept: the run record that holds it goes in an HTML comment.
+    """
+    lines = KIND.findall(text)
+    return " ".join(re.sub(r"[^a-z0-9 -]", " ", lines[-1].lower()).split())[:40].strip() if lines else ""
+
+
 def open_pr(job: Job) -> dict | None:
     prs = gh_json(
         "pr", "list", "--repo", job.repo, "--head", job.branch, "--state", "open", "--json", "number,url"
@@ -621,6 +634,7 @@ def publish_commits(job: Job) -> dict | None:
         job.pushed = git("-C", job.clone, "rev-parse", f"refs/heads/{job.branch}").stdout.strip()
     pr = open_pr(job)
     title, _, body = handoff_text(job, "pull-request.md").partition("\n")
+    job.kind = pull_request_kind(body) if title else ""
     if title and pr:
         gh(
             "pr",
@@ -867,6 +881,7 @@ def run_record(job: Job, outcome: Outcome | None, error: str, total_s: float) ->
         "fix_attempts": outcome.fix_attempts if outcome else 0,
         "pr_url": outcome.pr_url if outcome else "",
         "pushed": job.pushed,
+        "kind": job.kind,
         "validation": job.validation,
         "seconds": {"total": round(total_s), "agent": round(job.agent_s), "checks": round(job.checks_s)},
         **agent_usage(job.log_path),
@@ -991,6 +1006,8 @@ def cmd_score(args: argparse.Namespace) -> int:
     rows: dict[str, Counter] = {}
     for runs in job_records(args.repo, args.since):
         skills = ", ".join(skill["name"] for skill in runs[-1]["skills"][1:])  # the first is always workshop
+        if kind := next((run["kind"] for run in reversed(runs) if run.get("kind")), ""):
+            skills += f": {kind}"
         row = rows.setdefault(skills, Counter())
         row["jobs"] += 1
         row[job_ending(runs)] += 1
