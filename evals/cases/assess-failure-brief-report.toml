@@ -3,7 +3,7 @@ kind = "inspection"
 skills = ["assess-failure"]
 fixture = "scheduled-build"
 expect = "action-required"
-criterion = "keep summary and next_step to at most 40 words each; summarize repeated build failures and skipped publication; make clear that full error details are needed before fixing the cause and verifying successful publication; avoid diagnostic essays or lists of inapplicable repair skills in summary and next_step (the separately saved evidence field may contain supporting detail)"
+criterion = "summarize the repeated build failures and skipped publication, make clear that full error details are needed before fixing the cause and verifying successful publication, and keep summary and next_step free of unnecessary detail such as diagnostic essays, repeated counts or lists of inapplicable repair skills. Judge unnecessary detail, not word count: longer wording is fine when it carries needed information, and the separately saved evidence field may contain supporting detail"
 
 [observations]
 since = "2026-01-02T00:00:00+00:00"

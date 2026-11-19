@@ -6,4 +6,6 @@ In `replay` mode, the cursor advances only after the whole load commits. The nex
 
 In `current-window` mode, each call starts at its own scheduled window and does not replay an earlier window. A successful later call does not recover an earlier failure; the missed interval needs a replay.
 
+Each call's `target` names what it loads. Calls with `target=archive` copy source records to cold storage and do not load the reporting tables.
+
 The customer key is part of the reporting contract. This repository has no standing decision to retire or replace it. The model joins customers to orders on that key.

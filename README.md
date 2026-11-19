@@ -73,7 +73,7 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 ./workshop.py inspect <owner>/<repo>
 ```
 
-`--since 24h` is optional: the default is the last 24 hours. Use `--since 48h` for a longer window; positive durations in minutes, hours or days are accepted, up to `7d`.
+`--since 24h` is optional: the default is the last 24 hours. Positive durations in minutes, hours or days are accepted, up to `7d`. Modal keeps call history longer than logs, so failures older than its log retention are reported as coverage gaps; see [Limits and coverage](docs/modal-inspection.md#limits-and-coverage).
 
 Reported states determine whether failures occurred. When they did, `assess-failure` uses the logs and repository context to decide whether work remains. A later successful run alone does not establish recovery.
 
@@ -212,3 +212,4 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
+- Changed cases only: an `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.

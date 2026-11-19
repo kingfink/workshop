@@ -280,7 +280,9 @@ def test_all_jobs_failures_are_captured_before_recovery_logs(tmp_path, monkeypat
     assert all("1 selected calls" in item["gaps"][0] for item in evidence["functions"])
 
 
-def test_each_failure_selects_its_next_success_once(tmp_path, monkeypatch):
+def test_each_failure_selects_its_next_success_once_after_the_first_and_latest_failures(
+    tmp_path, monkeypatch
+):
     history = [
         call(state, f"fc-{hour}", hour)
         for hour, state in enumerate(
@@ -291,11 +293,59 @@ def test_each_failure_selects_its_next_success_once(tmp_path, monkeypatch):
     evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
     assert [log["call_id"] for log in evidence["functions"][0]["log_files"]] == [
         "fc-1",
-        "fc-2",
         "fc-5",
+        "fc-2",
         "fc-3",
         "fc-6",
     ]
+
+
+def test_a_job_that_fails_every_run_does_not_starve_other_jobs(tmp_path, monkeypatch):
+    histories = {
+        "imports/sync": [call("failure", f"fc-a{hour}", hour) for hour in range(24)],
+        "other/sync": [call("failure", "fc-b0", 1), call("success", "fc-b1", 2)],
+    }
+    commands = collector(monkeypatch, [])
+    monkeypatch.setattr(
+        inspect,
+        "sh",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, json.dumps(histories[command[3]])),
+    )
+    config = inspect.read_config(CONFIG.replace('["imports/sync"]', '["imports/sync", "other/sync"]'))
+    evidence = inspect.collect(config, SINCE, UNTIL, tmp_path)
+    captured = [(command[3], command[-1]) for command in commands if command[2] == "logs"]
+    assert len(captured) == inspect.MAX_LOG_FILES
+    assert captured[:3] == [("imports/sync", "fc-a0"), ("other/sync", "fc-b0"), ("imports/sync", "fc-a23")]
+    first, other = evidence["functions"]
+    assert "5 selected calls" in first["gaps"][0] and "1 selected calls" in other["gaps"][0]
+
+
+def test_manifest_stays_small_when_one_call_has_many_inputs(tmp_path, monkeypatch):
+    history = [call("failure", "fc-map", 0) for _ in range(1440)]
+    commands = collector(monkeypatch, history)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    item = evidence["functions"][0]
+    assert sum(command[2] == "logs" for command in commands) == 1
+    assert len(item["calls"]) == 2 and item["unlisted_calls"] == 1438
+    assert len(Path(item["history_path"]).read_text().splitlines()) == 1440
+    assert not item["gaps"]
+    assert len(json.dumps(evidence, indent=2)) < 2000
+
+
+def test_manifest_listing_does_not_limit_log_capture(tmp_path, monkeypatch):
+    history = [call("failure", f"fc-{index}", 0) for index in range(1440)]
+    commands = collector(monkeypatch, history)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path)
+    item = evidence["functions"][0]
+    assert sum(command[2] == "logs" for command in commands) == inspect.MAX_LOG_FILES
+    logged = {entry["call_id"] for entry in item["log_files"]}
+    listed = [c["function_call_id"] for c in item["calls"]]
+    assert listed[0] == "fc-0" and listed[-1] == "fc-1439" and set(listed) == logged
+    assert item["unlisted_calls"] == 1440 - len(listed)
+    assert item["counts"] == {"failure": 1440}
+    assert len(Path(item["history_path"]).read_text().splitlines()) == 1440
+    assert "1420 selected calls" in item["gaps"][0]
+    assert len(json.dumps(evidence, indent=2)) < 10_000
 
 
 def test_too_many_failures_still_leave_a_real_gap(tmp_path, monkeypatch):
@@ -367,6 +417,26 @@ def test_warning_only_capture_keeps_gap_and_fetches_fallback(tmp_path, monkeypat
     assert any("Modal returned no logs" in gap for gap in item["gaps"])
     agent(monkeypatch)
     assert inspect.assess(job(tmp_path), evidence)["status"] == "unable-to-assess"
+
+
+def test_cli_warning_beside_captured_logs_is_a_note_not_a_gap(tmp_path, monkeypatch):
+    collector(monkeypatch, [call("failure"), call("success", "fc-recovered", 12)])
+
+    def capture(command, path):
+        path.write_text("job output")
+        return True, "Warning: this client version is deprecated"
+
+    monkeypatch.setattr(inspect, "capture_log", capture)
+    evidence = inspect.collect(inspect.read_config(CONFIG), SINCE, UNTIL, tmp_path / "run")
+    item = evidence["functions"][0]
+    assert not item["gaps"]
+    assert all("deprecated" in entry["cli_stderr"] for entry in item["log_files"])
+    agent(monkeypatch)
+    result = inspect.assess(job(tmp_path), evidence)
+    assert result["status"] == "ok-after-review"
+    output = inspect.report("acme/analytics", evidence, result, verbose=True)
+    assert "imports/sync fc-recovered: Warning: this client version is deprecated" in output
+    assert "deprecated" not in inspect.report("acme/analytics", evidence, result)
 
 
 @pytest.mark.parametrize(

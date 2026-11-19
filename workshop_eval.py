@@ -364,7 +364,7 @@ def prepare_agent_env(worktree: Path) -> None:
 
 
 def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget: float) -> dict:
-    from workshop_inspect import assess, inspection_job, save_call_history
+    from workshop_inspect import assess, inspection_job, list_calls, save_call_history
 
     worktree = run_dir / "worktree"
     shutil.copytree(EVALS_DIR / "fixtures" / case["fixture"] / "repo", worktree)
@@ -375,7 +375,8 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
     (run_dir / "logs").mkdir()
     (run_dir / "history").mkdir()
     for index, item in enumerate(evidence["functions"]):
-        save_call_history(item, item["calls"], run_dir / "history" / f"{index:03}.jsonl")
+        calls = item["calls"]
+        save_call_history(item, calls, run_dir / "history" / f"{index:03}.jsonl")
         fixtures = item.get("log_files", [{"scope": "function", "text": item.pop("logs", "")}])
         for number, entry in enumerate(fixtures):
             path = run_dir / "logs" / f"{index:03}-{number:03}.log"
@@ -384,6 +385,7 @@ def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget:
             path.write_text(logs, encoding="utf-8")
             entry["path"] = str(path)
         item["log_files"] = fixtures
+        list_calls(item, calls)
     result = assess(job, evidence)
     after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
     passed = result["status"] == case["expect"] and before == after

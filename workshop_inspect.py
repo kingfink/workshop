@@ -10,6 +10,7 @@ import time
 import tomllib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from itertools import zip_longest
 from pathlib import Path
 
 from workshop import (
@@ -172,10 +173,47 @@ def selected_calls(calls: list[dict]) -> list[dict]:
     return selected
 
 
+def capture_order(calls: list[dict]) -> tuple[list[str], list[str]]:
+    """Failed and recovery call IDs to capture, each without duplicates. The first and latest failures lead."""
+    selected = selected_calls(calls)
+    failed = list(dict.fromkeys(call["function_call_id"] for call in selected if call["status"] in FAILURES))
+    if len(failed) > 2:
+        failed = [failed[0], failed[-1], *failed[1:-1]]
+    seen = set(failed)
+    recovered = dict.fromkeys(
+        call["function_call_id"]
+        for call in selected
+        if call["status"] not in FAILURES and call["function_call_id"] not in seen
+    )
+    return failed, list(recovered)
+
+
+def round_robin(queues: list[list]) -> list:
+    """One entry from each queue in turn, until all are empty."""
+    return [entry for row in zip_longest(*queues) for entry in row if entry is not None]
+
+
 def save_call_history(item: dict, calls: list[dict], path: Path) -> None:
     path.write_text("".join(json.dumps(call) + "\n" for call in calls), encoding="utf-8")
     item["history_path"] = str(path)
-    item["calls"] = selected_calls(calls)
+
+
+def list_calls(item: dict, calls: list[dict]) -> None:
+    """List the first selected input of each call with log files, and the first and last selected inputs.
+
+    One call can hold many inputs, so this bounds the manifest by the number of log files. Capture planning does
+    not use this list, and the history file keeps every input.
+    """
+    selected = selected_calls(calls)
+    logged = {entry.get("call_id") for entry in item["log_files"]}
+    listed, seen = [], set()
+    for index, call in enumerate(selected):
+        call_id = call["function_call_id"]
+        if index in (0, len(selected) - 1) or (call_id in logged and call_id not in seen):
+            listed.append(call)
+            seen.add(call_id)
+    item["calls"] = listed
+    item["unlisted_calls"] = len(calls) - len(listed)
 
 
 def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
@@ -184,7 +222,6 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
     history_dir = run_dir / "history"
     history_dir.mkdir()
     captured = 0
-    captures = []
 
     def fetch_log(item: dict, call_id: str = "") -> bool:
         nonlocal captured
@@ -193,19 +230,20 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
         command = modal_command(config, "logs", item["function"], since, until)
         if call_id:
             command += ["--function-call", call_id]
-        item["log_files"].append(
-            {"call_id": call_id, "path": str(path), "scope": "call" if call_id else "function"}
-        )
+        entry = {"call_id": call_id, "path": str(path), "scope": "call" if call_id else "function"}
+        item["log_files"].append(entry)
         label = call_id or "function-level fallback"
         try:
             has_content, diagnostics = capture_log(command, path)
-            if diagnostics:
-                item["gaps"].append(f"{label}: CLI stderr: {diagnostics}")
-            if not has_content:
-                item["gaps"].append(f"{label}: Modal returned no logs")
-                return True
         except ToolError as exc:
             item["gaps"].append(f"{label}: {exc}")
+            return False
+        if not has_content:
+            stderr = f"; CLI stderr: {diagnostics}" if diagnostics else ""
+            item["gaps"].append(f"{label}: Modal returned no logs{stderr}")
+            return True
+        if diagnostics:  # a note, not a gap: the log itself was captured
+            entry["cli_stderr"] = diagnostics
         return False
 
     evidence = {
@@ -215,9 +253,11 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
         "environment": config["environment"],
         "functions": [],
     }
+    histories, failed, recovered = [], [], []
     for index, name in enumerate(config["functions"]):
         item = {"function": name, "calls": [], "counts": {}, "failures": 0, "gaps": [], "log_files": []}
         evidence["functions"].append(item)
+        calls = []
         try:
             calls = json.loads(sh(modal_command(config, "calls", name, since, until), timeout=120).stdout)
             if not isinstance(calls, list) or any(
@@ -244,25 +284,25 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
                 item["gaps"].append("some inputs are still pending or running")
         except (ToolError, ValueError, TypeError) as exc:
             item["gaps"].append(f"could not read call history: {str(exc)[-1000:]}")
-        if not item["failures"]:
-            continue
-        seen = set()
-        for call in sorted(item["calls"], key=lambda call: call["status"] not in FAILURES):
-            call_id = call["function_call_id"]
-            if call_id not in seen:
-                captures.append((call["status"] not in FAILURES, item, call_id))
-                seen.add(call_id)
+            calls = []
+        histories.append((item, calls))
+        if item["failures"]:
+            failed_ids, recovered_ids = capture_order(calls)
+            failed.append([(item, call_id) for call_id in failed_ids])
+            recovered.append([(item, call_id) for call_id in recovered_ids])
+    # Jobs take turns, failures first, so one job that fails every run cannot use up the captures.
     skipped, fallback = Counter(), set()
-    for _, item, call_id in sorted(captures, key=lambda capture: capture[0]):
+    for item, call_id in round_robin(failed) + round_robin(recovered):
         if captured == MAX_LOG_FILES:
             skipped[item["function"]] += 1
         elif fetch_log(item, call_id):
             fallback.add(item["function"])
-    for item in evidence["functions"]:
+    for item, calls in histories:
         if count := skipped[item["function"]]:
             item["gaps"].append(f"log capture limit reached; {count} selected calls not collected")
         if item["function"] in fallback and captured < MAX_LOG_FILES:
             fetch_log(item)
+        list_calls(item, calls)
     return evidence
 
 
@@ -362,6 +402,14 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
         ]
         if result["evidence"]:
             lines += ["", "Evidence:", "", *(f"- {item}" for item in result["evidence"])]
+        notes = [
+            f"{item['function']} {entry.get('call_id') or 'function-level'}: {entry['cli_stderr']}"
+            for item in evidence["functions"]
+            for entry in item["log_files"]
+            if entry.get("cli_stderr")
+        ]
+        if notes:
+            lines += ["", "CLI stderr from captured logs:", "", *(f"- {note}" for note in notes)]
     if result["gaps"]:
         lines += ["", "Coverage gaps:", "", *(f"- {gap}" for gap in result["gaps"])]
     lines += ["", f"Next step: {result['next_step']}"]
