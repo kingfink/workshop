@@ -1083,6 +1083,11 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--verbose", action="store_true", help="print the full inspection report")
     inspect.add_argument("--since", default="24h", help="look back this long (default: 24h); e.g. 30m or 7d")
     inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
+    inspect.add_argument(
+        "--issue",
+        action="store_true",
+        help="propose an issue for action required, or the one it matches; publishes nothing",
+    )
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
     evals.add_argument("--runs", type=int, default=1, help="runs of each case")

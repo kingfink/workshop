@@ -534,7 +534,9 @@ def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict,
     return [f"Create the issue: {link}"]
 
 
-def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
+def report(
+    repo: str, evidence: dict, result: dict, *, verbose: bool = False, issue: list[str] | None = None
+) -> str:
     label = STATUSES[result["status"]] + (" (incomplete coverage)" if result["gaps"] else "")
     lines = [f"{'# ' if verbose else ''}{repo}: {label}", "", result["summary"]]
     if verbose:
@@ -568,6 +570,12 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
     if result["gaps"]:
         lines += ["", "Coverage gaps:", "", *(f"- {gap}" for gap in result["gaps"])]
     lines += ["", f"Next step: {result['next_step']}"]
+    if issue:
+        lines += ["", *issue]
+        proposal = result.get("issue")
+        if verbose and isinstance(proposal, dict) and isinstance(proposal.get("title"), str):
+            lines += ["", "Proposed issue:", "", f"> {proposal['title']}", ">"]
+            lines += [f"> {line}".rstrip() for line in str(proposal.get("body", "")).splitlines()]
     if verbose:
         lines += [
             "",
@@ -621,9 +629,22 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     run_dir = home / "logs" / name / timestamp("%Y%m%dT%H%M%S.%fZ")
     job = inspection_job(args.repo, base, clone, worktree, run_dir, args)
     evidence = collect(config, since, until, run_dir)
+    candidates, unreadable = [], ""
+    if args.issue and any(item["failures"] for item in evidence["functions"]):
+        try:
+            candidates = candidate_issues(args.repo, since)
+        except ToolError as exc:
+            unreadable = str(exc)
+        else:
+            (run_dir / ISSUES_FILE).write_text(json.dumps(candidates, indent=2), encoding="utf-8")
     result = assess(job, evidence)
-    output = report(args.repo, evidence, result, verbose=True)
+    issue = None
+    if args.issue:
+        issue = issue_lines(args.repo, result, candidates, evidence, worktree)
+        if unreadable and issue:
+            issue = [f"No issue link: could not read {args.repo}'s issues: {unreadable}"]
+    output = report(args.repo, evidence, result, verbose=True, issue=issue)
     (run_dir / "report.md").write_text(output, encoding="utf-8")
-    print(output if args.verbose else report(args.repo, evidence, result))
+    print(output if args.verbose else report(args.repo, evidence, result, issue=issue))
     print(f"Report: {run_dir / 'report.md'}")
     return {"ok": 0, "ok-after-review": 0, "action-required": 2, "unable-to-assess": 1}[result["status"]]

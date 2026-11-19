@@ -56,7 +56,7 @@ def job(tmp_path):
     )
 
 
-def agent(monkeypatch, status="ok-after-review", code=0):
+def agent(monkeypatch, status="ok-after-review", code=0, issue=None):
     runs = []
 
     def invoke(job, prompt):
@@ -68,6 +68,7 @@ def agent(monkeypatch, status="ok-after-review", code=0):
                     "summary": "The replay covered the failed interval.",
                     "evidence": ["fc-recovered committed the failed interval."],
                     "next_step": "No action remains.",
+                    **({"issue": issue} if issue else {}),
                 }
             )
         )
@@ -688,3 +689,53 @@ def test_issue_lines(tmp_path, status, issue, first):
     assert lines[0].startswith(first) if first else lines == []
     if issue and "48213" in issue.get("body", ""):
         assert "- not in the repository or run metadata: 48213" in lines
+
+
+TRUSTED = {
+    "number": 12,
+    "title": "Sync fails",
+    "body": "b",
+    "state": "open",
+    "closed_at": None,
+    "author_association": "OWNER",
+}
+STRANGER = {**TRUSTED, "number": 13, "author_association": "NONE"}
+
+
+def test_issue_flag_offers_a_link_and_writes_nothing_to_github(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG}, repo_issues=[TRUSTED, STRANGER])
+    collector(monkeypatch, [call("failure")])
+    agent(
+        monkeypatch, status="action-required", issue={"title": "Sync fails", "body": "Rerun after the fix."}
+    )
+    assert fake.run("inspect", "acme/analytics", "--issue") == 2
+    output = capsys.readouterr().out
+    assert "Create the issue: https://github.com/acme/analytics/issues/new?title=Sync%20fails" in output
+    run_dir = next((fake.home / ".workshop/logs").glob("*-inspect/*"))
+    assert [item["number"] for item in json.loads((run_dir / "issues.json").read_text())] == [12]
+    assert "Proposed issue:" in (run_dir / "report.md").read_text()
+    for command in (("issue", "create"), ("issue", "edit"), ("issue", "comment")):
+        assert not fake.calls(*command)
+
+
+def test_without_the_issue_flag_no_issues_are_read(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG}, repo_issues=[TRUSTED])
+    collector(monkeypatch, [call("failure")])
+    agent(monkeypatch, status="action-required", issue={"match": 12})
+    assert fake.run("inspect", "acme/analytics") == 2
+    assert "Matches #12" not in capsys.readouterr().out
+    assert not any("/issues?" in str(arg) for command in fake.state["calls"] for arg in command)
+
+
+def test_unreadable_issues_still_report_the_assessment(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG})
+
+    def unreachable(repo, since):
+        raise workshop.ToolError("gh: rate limited (HTTP 403)")
+
+    monkeypatch.setattr(inspect, "candidate_issues", unreachable)
+    collector(monkeypatch, [call("failure")])
+    agent(monkeypatch, status="action-required")
+    assert fake.run("inspect", "acme/analytics", "--issue") == 2
+    output = capsys.readouterr().out
+    assert "Action required" in output and "No issue link: could not read acme/analytics's issues" in output

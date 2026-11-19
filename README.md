@@ -90,6 +90,8 @@ The terminal shows the outcome, a short summary and the next step. The full repo
 
 Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
 
+`--issue` also proposes an issue when the result is Action required. The tool gives the agent the repo's open issues, and those closed during the window, written by people with push access. The agent matches one or proposes a new one. The terminal shows the matched issue's link, or a link to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, and that no eight words in a row come from a log. If the check fails, there is no link. Inspect still writes nothing to GitHub.
+
 ### eval
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
@@ -125,7 +127,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
-- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell.
+- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `--issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -187,9 +189,9 @@ Add a batch mode that works through open Dependabot PRs and returns one consolid
 
 ### Jobs from telemetry
 
-Let `inspect` create or reuse an issue when `assess-failure` identifies outstanding work. The assessment proposes the issue; Workshop publishes it with the evidence, next step, verification and an applicable repair skill. Recovered failures create no issue. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue. Reuse issues across inspections of the same unresolved problem.
+`inspect --issue` proposes an issue, or matches an existing one, for the owner to review and create. Next, publish it without review once the publish check and its evals have earned trust, and name a repair skill in a form the queue can use, so a schedule can run queued issues. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue.
 
-The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed.
+The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed, matching their findings against the same issues.
 
 ### More job skills
 
