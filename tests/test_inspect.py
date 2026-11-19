@@ -581,3 +581,57 @@ def test_inspection_agent_may_read_candidate_issues(tmp_path):
     inspection = job(tmp_path)
     allowed = flag(workshop.claude_command(inspection), "--allowedTools").split(",")
     assert f"Read(/{inspection.log_path.parent / inspect.ISSUES_FILE})" in allowed
+
+
+def publish_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "models").mkdir(parents=True)
+    (repo / "models" / "orders.sql").write_text("select customer_email from orders\n")
+    (repo / "seed.bin").write_bytes(b"\xff\x00\xfe")
+    history = tmp_path / "history.jsonl"
+    history.write_text(json.dumps({**call("failure", "fc-first"), "input": "secret-7"}) + "\n")
+    log = tmp_path / "logs" / "000.log"
+    log.parent.mkdir()
+    log.write_text(
+        "06:00 fc-first load failed: Upstream returned an unexpected value for the search type field\n"
+    )
+    evidence = {
+        "since": SINCE,
+        "until": UNTIL,
+        "functions": [
+            {
+                "function": "imports/sync",
+                "counts": {"failure": 1},
+                "history_path": str(history),
+                "log_files": [{"path": str(log), "scope": "call", "call_id": "fc-first"}],
+            }
+        ],
+    }
+    return repo, evidence, log
+
+
+def test_publish_check_allows_repository_and_run_metadata(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known = inspect.known_tokens(repo, evidence, [{"number": 12}])
+    text = (
+        "`imports/sync` run fc-first failed at 06:00 on 2026-01-02 (1 failure) at "
+        "models/orders.sql:1 on `customer_email`; see #12."
+    )
+    assert inspect.unknown_tokens(text, known) == []
+
+
+def test_publish_check_blocks_values_paths_and_numbers_from_elsewhere(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known = inspect.known_tokens(repo, evidence, [])
+    text = f"Rows like a@example.com and 48213 subscribers, `discover`, secret-7 in {log}."
+    assert inspect.unknown_tokens(text, known) == ["a@example.com", "48213", "discover", "secret-7", str(log)]
+
+
+def test_publish_check_blocks_eight_words_copied_from_a_log(tmp_path):
+    _, _, log = publish_fixture(tmp_path)
+    text = "It failed because upstream returned an unexpected value, for the search type."
+    assert inspect.copied_runs(text, [log]) == [
+        "upstream returned an unexpected value for the search",
+        "returned an unexpected value for the search type",
+    ]
+    assert inspect.copied_runs("an unexpected value for the search type", [log]) == []

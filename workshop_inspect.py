@@ -9,7 +9,7 @@ import subprocess
 import time
 import tomllib
 import urllib.parse
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
 from pathlib import Path
@@ -406,6 +406,89 @@ def assess(job: Job, evidence: dict) -> dict:
         result["summary"] = "The inspection is incomplete. " + result["summary"]
         result["next_step"] = "Resolve the coverage gaps listed below and repeat the inspection."
     return result
+
+
+# --- the publish check: issue text may name what the repository and the run metadata already show
+
+EDGE = "\"'`()[]{}<>,;:!?*."  # stripped from both ends of a word
+PIECES = re.compile(r"`[^`\n]+`|\S+")  # a backtick span, or a word
+LINE_REF = re.compile(r"(.+):\d+(?:-\d+)?")  # a file and line, such as models/orders.sql:12
+
+
+def words(text: str) -> list[str]:
+    return [word for word in (piece.strip(EDGE) for piece in text.split()) if word]
+
+
+def time_tokens(value: str) -> set[str]:
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return {value}
+    return {value, moment.date().isoformat(), moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
+
+
+def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> set[str]:
+    """The repository's words and file paths, and the run metadata.
+
+    Never the paths of saved logs or history, nor history fields other than the call ID, state and enqueue time:
+    those can hold source data.
+    """
+    known = set()
+    for root, dirs, files in os.walk(worktree):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        for name in files:
+            path = Path(root, name)
+            if name == ".git" or path.is_symlink():
+                continue
+            known.add(path.relative_to(worktree).as_posix())
+            known.update(words(path.read_text(encoding="utf-8", errors="replace")))
+    known |= time_tokens(evidence["since"]) | time_tokens(evidence["until"])
+    for item in evidence["functions"]:
+        known.add(item["function"])
+        known.update(item["counts"])
+        known.update(str(count) for count in [*item["counts"].values(), item.get("failures", 0)])
+        if item.get("history_path"):
+            for line in Path(item["history_path"]).read_text(encoding="utf-8").splitlines():
+                call = json.loads(line)
+                known.update((call["function_call_id"], call["status"]))
+                known |= time_tokens(call["enqueued_at"])
+    for issue in candidates:
+        known.update((str(issue["number"]), f"#{issue['number']}"))
+    return known
+
+
+def unknown_tokens(text: str, known: set[str]) -> list[str]:
+    """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order."""
+    missing = []
+    for match in PIECES.finditer(text):
+        piece = match[0]
+        code = len(piece) > 1 and piece[0] == piece[-1] == "`"
+        for word in words(piece):
+            if not (code or any(char.isdigit() or char in "@/_." for char in word)):
+                continue
+            ref = LINE_REF.fullmatch(word)
+            if word not in known and not (ref and ref[1] in known) and word not in missing:
+                missing.append(word)
+    return missing
+
+
+def copied_runs(text: str, logs: list[Path], size: int = 8) -> list[str]:
+    """Runs of `size` words in `text` that also appear in a log, ignoring case, in text order."""
+    mine = [word.lower() for word in words(text)]
+    runs = [tuple(mine[index : index + size]) for index in range(len(mine) - size + 1)]
+    wanted, found = set(runs), set()
+    for path in logs if wanted else []:
+        window = deque(maxlen=size)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as log:
+                for line in log:
+                    for word in words(line):
+                        window.append(word.lower())
+                        if tuple(window) in wanted:
+                            found.add(tuple(window))
+        except OSError:  # a log that was never saved is a coverage gap, reported elsewhere
+            continue
+    return list(dict.fromkeys(" ".join(run) for run in runs if run in found))
 
 
 def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
