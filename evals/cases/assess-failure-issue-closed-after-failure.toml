@@ -4,7 +4,7 @@ skills = ["assess-failure"]
 fixture = "modal-inspection"
 expect = "action-required"
 expect_issue = 9
-criterion = "match the issue for the missing customer key that closed after the last failure, and still give replaying the missed current-window intervals as the next step"
+criterion = "give replaying the missed current-window intervals as the next step, with how to verify it"
 
 [[issues]]
 number = 9

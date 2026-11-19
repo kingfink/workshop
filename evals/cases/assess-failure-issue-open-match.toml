@@ -4,7 +4,7 @@ skills = ["assess-failure"]
 fixture = "modal-inspection"
 expect = "action-required"
 expect_issue = 7
-criterion = "match the open issue that already tracks the missing customer key, and recommend investigating or restoring the upstream contract rather than removing the field"
+criterion = "recommend investigating or restoring the upstream contract for the missing customer key rather than removing the field"
 
 [[issues]]
 number = 7

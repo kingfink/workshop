@@ -588,7 +588,9 @@ def test_inspection_agent_may_read_candidate_issues(tmp_path):
 def publish_fixture(tmp_path):
     repo = tmp_path / "repo"
     (repo / "models").mkdir(parents=True)
-    (repo / "models" / "orders.sql").write_text("select customer_email from orders\n")
+    (repo / "models" / "orders.sql").write_text(
+        "select customer_email from orders\nleft join customers on orders.customer_id = customers.customer_id\n"
+    )
     (repo / "seed.bin").write_bytes(b"\xff\x00\xfe")
     history = tmp_path / "history.jsonl"
     history.write_text(json.dumps({**call("failure", "fc-first"), "input": "secret-7"}) + "\n")
@@ -614,19 +616,53 @@ def publish_fixture(tmp_path):
 
 def test_publish_check_allows_repository_and_run_metadata(tmp_path):
     repo, evidence, log = publish_fixture(tmp_path)
-    known = inspect.known_tokens(repo, evidence, [{"number": 12}])
+    known, files = inspect.known_tokens(repo, evidence, [{"number": 12}])
     text = (
         "`imports/sync` run fc-first failed at 06:00 on 2026-01-02 (1 failure) at "
         "models/orders.sql:1 on `customer_email`; see #12."
     )
-    assert inspect.unknown_tokens(text, known) == []
+    assert inspect.unknown_tokens(text, known, files) == []
 
 
 def test_publish_check_blocks_values_paths_and_numbers_from_elsewhere(tmp_path):
     repo, evidence, log = publish_fixture(tmp_path)
-    known = inspect.known_tokens(repo, evidence, [])
+    known, files = inspect.known_tokens(repo, evidence, [])
     text = f"Rows like a@example.com and 48213 subscribers, `discover`, secret-7 in {log}."
-    assert inspect.unknown_tokens(text, known) == ["a@example.com", "48213", "discover", "secret-7", str(log)]
+    assert inspect.unknown_tokens(text, known, files) == [
+        "a@example.com",
+        "48213",
+        "discover",
+        "secret-7",
+        str(log),
+    ]
+
+
+def test_publish_check_allows_ranges_column_names_and_candidate_times(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [{"number": 10, "closed_at": "2026-01-02T09:00:00Z"}])
+    text = (
+        "The 2026-01-02 00:00-06:00 window, interval [00:00,06:00) or 00:00–06:00, lacks `customer_id` "
+        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z."
+    )
+    assert inspect.unknown_tokens(text, known, files) == []
+
+
+def test_publish_check_blocks_code_beside_punctuation_and_numbers_after_words(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [])
+    text = (
+        "Values (`acme-customer`) and see:`discover` with customers:48213, failure:48213, "
+        "secret-7, customer_id-48213 and 000-000.log."
+    )
+    assert inspect.unknown_tokens(text, known, files) == [
+        "acme-customer",
+        "discover",
+        "customers:48213",
+        "failure:48213",
+        "secret-7",
+        "customer_id-48213",
+        "000-000.log",
+    ]
 
 
 def test_publish_check_blocks_eight_words_copied_from_a_log(tmp_path):
@@ -668,6 +704,11 @@ CANDIDATES = [{"number": 12, "title": "t", "body": "", "state": "open", "closed_
         (
             "action-required",
             {"title": "Sync fails", "body": "Rerun it."},
+            "Create the issue: https://github.com/acme/analytics/issues/new?",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun the acme/analytics imports."},
             "Create the issue: https://github.com/acme/analytics/issues/new?",
         ),
         (

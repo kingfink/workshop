@@ -420,7 +420,11 @@ def assess(job: Job, evidence: dict) -> dict:
 # --- the publish check: issue text may name what the repository and the run metadata already show
 
 EDGE = "\"'`()[]{}<>,;:!?*."  # stripped from both ends of a word
-PIECES = re.compile(r"`[^`\n]+`|\S+")  # a backtick span, or a word
+PIECES = re.compile(r"`[^`\n]+`|[^\s`]+")  # a backtick span, or a word up to the next backtick
+PARTS = re.compile(
+    r"[.()'\"=,:/\[\]{}<>]"
+)  # splits a repository word, so `customer_id` is known from `x.customer_id`
+RANGE = re.compile(r"[-–—,]")  # joins checked words, as in 00:00-06:00
 LINE_REF = re.compile(r"(.+):\d+(?:-\d+)?")  # a file and line, such as models/orders.sql:12
 
 
@@ -436,21 +440,24 @@ def time_tokens(value: str) -> set[str]:
     return {value, moment.date().isoformat(), moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
 
 
-def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> set[str]:
-    """The repository's words and file paths, and the run metadata.
+def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tuple[set[str], set[str]]:
+    """The repository's words and the run metadata, and separately the repository's file paths and names.
 
     Never the paths of saved logs or history, nor history fields other than the call ID, state and enqueue time:
     those can hold source data.
     """
-    known = set()
-    for root, dirs, files in os.walk(worktree):
+    known, files = set(), set()
+    for root, dirs, names in os.walk(worktree):
         dirs[:] = [name for name in dirs if name != ".git"]
-        for name in files:
+        for name in names:
             path = Path(root, name)
             if name == ".git" or path.is_symlink():
                 continue
-            known.add(path.relative_to(worktree).as_posix())
-            known.update(words(path.read_text(encoding="utf-8", errors="replace")))
+            files |= {path.relative_to(worktree).as_posix(), name}
+            for word in words(path.read_text(encoding="utf-8", errors="replace")):
+                known.add(word)
+                known.update(part for part in PARTS.split(word) if part)
+    known |= files
     known |= time_tokens(evidence["since"]) | time_tokens(evidence["until"])
     for item in evidence["functions"]:
         known.add(item["function"])
@@ -463,20 +470,37 @@ def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> set[
                 known |= time_tokens(call["enqueued_at"])
     for issue in candidates:
         known.update((str(issue["number"]), f"#{issue['number']}"))
-    return known
+        if issue.get("closed_at"):
+            known |= time_tokens(issue["closed_at"])
+    return known, files
 
 
-def unknown_tokens(text: str, known: set[str]) -> list[str]:
-    """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order."""
+def checked(word: str) -> bool:
+    return any(char.isdigit() or char in "@/_." for char in word)
+
+
+def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
+    """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order.
+
+    `path:line` passes when `path` is one of the repository's `files`. Checked words joined by a dash or comma, as in
+    00:00-06:00, pass when each passes.
+    """
+
+    def passes(word: str) -> bool:
+        ref = LINE_REF.fullmatch(word)
+        return word in known or bool(ref and ref[1] in files)
+
     missing = []
     for match in PIECES.finditer(text):
         piece = match[0]
         code = len(piece) > 1 and piece[0] == piece[-1] == "`"
         for word in words(piece):
-            if not (code or any(char.isdigit() or char in "@/_." for char in word)):
+            if not (code or checked(word)) or passes(word):
                 continue
-            ref = LINE_REF.fullmatch(word)
-            if word not in known and not (ref and ref[1] in known) and word not in missing:
+            parts = RANGE.split(word)
+            if len(parts) > 1 and all(part and checked(part) and passes(part) for part in parts):
+                continue
+            if word not in missing:
                 missing.append(word)
     return missing
 
@@ -529,7 +553,8 @@ def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict,
         return ["No issue link: the assessment proposed no issue."]
     text = issue["title"] + "\n" + issue["body"]
     logs = [Path(entry["path"]) for item in evidence["functions"] for entry in item["log_files"]]
-    unknown = unknown_tokens(text, known_tokens(worktree, evidence, candidates))
+    known, files = known_tokens(worktree, evidence, candidates)
+    unknown = unknown_tokens(text, known | {repo}, files)
     copied = copied_runs(text, logs)
     if unknown or copied:
         return [
