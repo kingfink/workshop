@@ -30,7 +30,7 @@ Write one question with concrete options to `question.md`, then stop.
 
 ## Done
 
-Before you edit, decide what done is and the check that will show it, such as an existing test, a build, a query or a command. Run the check before you edit and see it fail: a check that already passes cannot show the change is done. If you find no check that fails, such as when you cannot reproduce a problem the issue reports, ask. Run the check again before you finish.
+Before you edit, decide what done is and the check that will show it, such as a test, a query or a command. See the check fail without your change, on the default branch: a build or test suite that already passes there is not that check. If you find no check that fails, such as when you cannot reproduce a problem the issue reports, ask. If the check cannot run in the sandbox, name it in the pull request instead. Run the check again before you finish.
 
 ## Working
 

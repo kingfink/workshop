@@ -602,16 +602,21 @@ def handoff_text(job: Job, name: str) -> str:
         return file.read().strip()
 
 
-KIND = re.compile(r"^kind:(.*)$", re.I | re.M)
+KIND = re.compile(r"[ \t>*_-]*kind[*_]*:[*_]*(.*)", re.I)  # also as a list item or in bold: **Kind:**
 
 
 def pull_request_kind(text: str) -> str:
-    """The kind of work on the last `Kind:` line of a pull request, such as "rename field", or "".
+    """The kind of work on the last `Kind:` line of a pull request outside code blocks, such as "rename field", or "".
 
     Only lowercase letters, digits, spaces and hyphens are kept: the run record that holds it goes in an HTML comment.
     """
-    lines = KIND.findall(text)
-    return " ".join(re.sub(r"[^a-z0-9 -]", " ", lines[-1].lower()).split())[:40].strip() if lines else ""
+    kinds, fenced = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and (found := KIND.fullmatch(line)):
+            kinds.append(found[1])
+    return " ".join(re.sub(r"[^a-z0-9 -]", " ", kinds[-1].lower()).split())[:40].strip() if kinds else ""
 
 
 def open_pr(job: Job) -> dict | None:

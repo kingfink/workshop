@@ -300,9 +300,13 @@ def test_pull_request_case_checks_kind_and_criterion(tmp_path, monkeypatch, text
     case = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
     case = case | {"kind_line": True, "pull_request": "name a check"}
     monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
-    monkeypatch.setattr(
-        workshop_eval, "judge", lambda text, criterion, cwd, label="question": "Checked:" in text
-    )
+    judged = []
+
+    def judge(text, criterion, cwd, label="question"):
+        judged.append((criterion, label))
+        return "Checked:" in text
+
+    monkeypatch.setattr(workshop_eval, "judge", judge)
     work = workshop.invoke_agent
 
     def agent(job, prompt):
@@ -315,3 +319,4 @@ def test_pull_request_case_checks_kind_and_criterion(tmp_path, monkeypatch, text
     result = eval_results(tmp_path)[case["name"]]
     assert result["passed"] is (why is None)
     assert result["why"] == (why or "changed it, and every check passes")
+    assert judged == ([] if why and "Kind" in why else [("name a check", "pull request")])

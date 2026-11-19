@@ -235,8 +235,11 @@ def test_score(fake, capsys, pr, ending):
         ("Add\n\nKind: one\nkind: add <b>tests</b> -->", "add b tests b --"),  # the last line, and no < or >
         ("Add\n\nKind: " + "x" * 100, "x" * 40),
         ("Add x\n\nCloses #12", ""),
+        ("Add\n\n**Kind:** rename field", "rename field"),
+        ("Add\n\n- Kind: rename field", "rename field"),
+        ("Add\n\nKind: add manifest\n\n```yaml\nkind: Deployment\n```\n", "add manifest"),
     ],
-    ids=["normalized", "markup", "long", "none"],
+    ids=["normalized", "markup", "long", "none", "bold", "list item", "code block"],
 )
 def test_pull_request_kind(text, kind):
     assert workshop.pull_request_kind(text) == kind

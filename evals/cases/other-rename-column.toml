@@ -3,7 +3,7 @@ skills = ["other"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
 kind_line = true
-pull_request = "name a check that shows `order_total` replaced `amount`, with its results before and after the change"
+pull_request = "name a check that failed before the change and passes after it, and give both results"
 
 [remove_columns]
 fct_orders = ["amount"]
