@@ -437,7 +437,9 @@ def time_tokens(value: str) -> set[str]:
         moment = datetime.fromisoformat(value)
     except ValueError:
         return {value}
-    return {value, moment.date().isoformat(), moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
+    times = {moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
+    utc = {f"{time}Z" for time in times} if moment.utcoffset() == timedelta(0) else set()
+    return {value, moment.date().isoformat(), *times, *utc}
 
 
 def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tuple[set[str], set[str]]:

@@ -642,7 +642,7 @@ def test_publish_check_allows_ranges_column_names_and_candidate_times(tmp_path):
     known, files = inspect.known_tokens(repo, evidence, [{"number": 10, "closed_at": "2026-01-02T09:00:00Z"}])
     text = (
         "The 2026-01-02 00:00-06:00 window, interval [00:00,06:00) or 00:00–06:00, lacks `customer_id` "
-        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z."
+        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z, after fc-first at 06:00:00Z or 06:00Z."
     )
     assert inspect.unknown_tokens(text, known, files) == []
 
