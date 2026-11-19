@@ -3,7 +3,7 @@ skills = ["other"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
 kind_line = true
-pull_request = "give a check's result from before the change showing no `order_total` column, and its result after showing one"
+pull_request = "say that a check failed before the change and passes after it"
 
 [remove_columns]
 fct_orders = ["amount"]
