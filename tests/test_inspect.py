@@ -808,3 +808,24 @@ def test_inspection_prompt_names_candidate_issues_only_when_fetched(tmp_path):
         f"Candidate issues: {inspection.log_path.parent / inspect.ISSUES_FILE}"
         in inspect.inspection_prompt(inspection)
     )
+
+
+def test_publish_check_allows_words_joined_from_known_pieces(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    (repo / "models" / "orders.yml").write_text(
+        "columns:\n  - name: status\n    tests:\n      - accepted_values:\n          values: [open, closed]\n"
+        "      - relationships:\n          to: ref('dim_customers')\n"
+    )
+    known, files = inspect.known_tokens(repo, evidence, [])
+    text = (
+        "1/1 runs failed `accepted_values_orders_status__open__closed` and "
+        "relationships_orders_customer_id__customer_id__ref_dim_customers_."
+    )
+    assert inspect.unknown_tokens(text, known, files) == []
+    blocked = "orders_48213, jane_doe, `status-pending` and /models/orders.sql"
+    assert inspect.unknown_tokens(blocked, known, files) == [
+        "orders_48213",
+        "jane_doe",
+        "status-pending",
+        "/models/orders.sql",
+    ]

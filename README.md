@@ -90,7 +90,7 @@ The terminal shows the outcome, a short summary and the next step. The full repo
 
 Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
 
-`--issue` also proposes an issue when the result is Action required. The tool gives the agent the repo's open issues, and those closed during the window, written by people with push access. The agent matches one or proposes a new one. The terminal shows the matched issue's link, or a link to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, and that no eight words in a row come from a log. If the check fails, there is no link. Inspect still writes nothing to GitHub.
+`--issue` also proposes an issue when the result is Action required. The tool gives the agent the repo's open issues, and those closed during the window, written by people with push access. The agent matches one or proposes a new one. The terminal shows the matched issue's link, or a link to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, or is joined from such words by `-`, `_`, `/` or `,`, as dbt's test names are, and that no eight words in a row come from a log. If the check fails, there is no link. Inspect still writes nothing to GitHub.
 
 ### eval
 
@@ -160,10 +160,6 @@ A run that is killed before it can clean up, such as by a power cut, leaves the 
 ### Generic job skill
 
 One `other` skill for issues that no job skill covers. It adds one rule to the `workshop` skill: before editing, state what done is and the check that will prove it, such as an existing test, a build or a query, and ask if there is none. The pull request names the kind of work, so `score` shows which kinds recur and how they end. Start with jobs that end in a pull request; questions need the answer outcome.
-
-### Selective evals
-
-An `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.
 
 ### Answer outcome
 

@@ -422,9 +422,9 @@ def assess(job: Job, evidence: dict) -> dict:
 EDGE = "\"'`()[]{}<>,;:!?*."  # stripped from both ends of a word
 PIECES = re.compile(r"`[^`\n]+`|[^\s`]+")  # a backtick span, or a word up to the next backtick
 PARTS = re.compile(
-    r"[.()'\"=,:/\[\]{}<>]"
-)  # splits a repository word, so `customer_id` is known from `x.customer_id`
-RANGE = re.compile(r"[-–—,]")  # joins checked words, as in 00:00-06:00
+    r"[.()'\"=,:/\[\]{}<>_-]"
+)  # splits a repository word, so `customer_id` and `customer` are known from `x.customer_id`
+JOINS = re.compile(r"[-–—,/_]+")  # joins known words, as in 00:00-06:00 or accepted_values_orders_status
 LINE_REF = re.compile(r"(.+):\d+(?:-\d+)?")  # a file and line, such as models/orders.sql:12
 
 
@@ -484,8 +484,9 @@ def checked(word: str) -> bool:
 def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
     """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order.
 
-    `path:line` passes when `path` is one of the repository's `files`. Checked words joined by a dash or comma, as in
-    00:00-06:00, pass when each passes.
+    `path:line` passes when `path` is one of the repository's `files`. A word joined from known words by dashes, commas,
+    slashes or underscores passes, as in 00:00-06:00 or a test name dbt builds from model and column names, unless it
+    starts with / or ~ like a local path.
     """
 
     def passes(word: str) -> bool:
@@ -499,8 +500,8 @@ def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
         for word in words(piece):
             if not (code or checked(word)) or passes(word):
                 continue
-            parts = RANGE.split(word)
-            if len(parts) > 1 and all(part and checked(part) and passes(part) for part in parts):
+            parts = [part for part in JOINS.split(word) if part]
+            if len(parts) > 1 and word[0] not in "/~" and all(map(passes, parts)):
                 continue
             if word not in missing:
                 missing.append(word)
