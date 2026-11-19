@@ -714,7 +714,7 @@ CANDIDATES = [{"number": 12, "title": "t", "body": "", "state": "open", "closed_
         (
             "action-required",
             {"title": "Sync fails", "body": "48213 subscribers"},
-            "No issue link: the proposed issue failed the publish check.",
+            "Check the flagged words before creating the issue:",
         ),
         (
             "action-required",
@@ -729,7 +729,8 @@ def test_issue_lines(tmp_path, status, issue, first):
     lines = inspect.issue_lines("acme/analytics", result, CANDIDATES, evidence, repo)
     assert lines[0].startswith(first) if first else lines == []
     if issue and "48213" in issue.get("body", ""):
-        assert "- not in the repository or run metadata: 48213" in lines
+        assert lines[1] == "- not in the repository or run metadata: 48213"
+        assert lines[-1].startswith("Create the issue: https://github.com/acme/analytics/issues/new?")
 
 
 TRUSTED = {

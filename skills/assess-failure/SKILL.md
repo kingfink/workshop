@@ -54,4 +54,4 @@ If the prompt names a candidate issues file and you report `action-required`, ad
 
 The issue will be public. Name only what the repository contains, such as models, columns, tests and files (`path:line` is fine), and run IDs, dates, times, run states and run counts from the evidence. Never include values that appear only in logs or data, numbers that describe the data such as row counts, traffic or subscribers, log excerpts, local paths or URLs. Cite repository files, never the saved logs or history.
 
-Before offering the issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, and that no eight words in a row match a log. Write "for example", not "e.g.". If the check fails, the owner gets no link.
+Before offering the issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, and that no eight words in a row match a log. Write "for example", not "e.g.".

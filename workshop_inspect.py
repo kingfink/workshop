@@ -537,7 +537,8 @@ def new_issue_link(repo: str, title: str, body: str) -> str:
 
 
 def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict, worktree: Path) -> list[str]:
-    """The matched issue's link, a link to create the proposed one, or why there is none."""
+    """The matched issue's link, a link to create the proposed one after any words the publish check flags, or why
+    there is none."""
     if result["status"] != "action-required":
         return []
     issue = result.get("issue")
@@ -559,16 +560,19 @@ def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict,
     known, files = known_tokens(worktree, evidence, candidates)
     unknown = unknown_tokens(text, known | {repo}, files)
     copied = copied_runs(text, logs)
-    if unknown or copied:
-        return [
-            "No issue link: the proposed issue failed the publish check.",
+    flagged = (
+        [
+            "Check the flagged words before creating the issue:",
             *(f"- not in the repository or run metadata: {word}" for word in unknown),
             *(f"- copied from a log: {run}" for run in copied),
         ]
+        if unknown or copied
+        else []
+    )
     link = new_issue_link(repo, issue["title"], issue["body"])
     if len(link) > MAX_LINK_CHARS:
-        return ["No issue link: the proposed issue is too long for a link; see the full report."]
-    return [f"Create the issue: {link}"]
+        return [*flagged, "No issue link: the proposed issue is too long for a link; see the full report."]
+    return [*flagged, f"Create the issue: {link}"]
 
 
 def report(

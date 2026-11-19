@@ -90,7 +90,7 @@ The terminal shows the outcome, a short summary and the next step. The full repo
 
 Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
 
-`--issue` also proposes an issue when the result is Action required. The tool gives the agent the repo's open issues, and those closed during the window, written by people with push access. The agent matches one or proposes a new one. The terminal shows the matched issue's link, or a link to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, or is joined from such words by `-`, `_`, `/` or `,`, as dbt's test names are, and that no eight words in a row come from a log. If the check fails, there is no link. Inspect still writes nothing to GitHub.
+`--issue` also proposes an issue when the result is Action required. The tool gives the agent the repo's open issues, and those closed during the window, written by people with push access. The agent matches one or proposes a new one. The terminal shows the matched issue's link, or a link to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool checks that every number, every word containing `@`, `/`, `_` or `.`, and every word in backticks appears in the repository or the run metadata, or is joined from such words by `-`, `_`, `/` or `,`, as dbt's test names are, and that no eight words in a row come from a log. Words that fail the check are listed above the link, for you to look at before you submit. Inspect still writes nothing to GitHub.
 
 ### eval
 
@@ -218,3 +218,7 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
+
+### Publishing issues without review
+
+Before `inspect` posts issues itself, block any issue that fails the publish check, and add a second check: a separate model that sees only the proposed issue and the rules for public text, and blocks the issue if it finds a data value. Keep data out of what the inspect agent reads, too, such as row values and failing-row samples in logs, so it has none to repeat.
