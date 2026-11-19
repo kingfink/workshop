@@ -61,7 +61,7 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
 
-Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a build or a query, that fails before the change. If there is none, it asks. The pull request gives the check's results before and after.
+Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 
 | Job skill | For an issue that asks to |
 |---|---|
