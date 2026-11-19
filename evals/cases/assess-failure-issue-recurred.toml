@@ -1,0 +1,38 @@
+# An issue for the same failure that closed before the last failure does not match: the failure recurred.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "action-required"
+expect_issue = "new"
+criterion = "describe the recurring missing customer key and recommend investigating or restoring the upstream contract rather than removing the field, in an issue whose title puts the job and column names in backticks"
+
+[[issues]]
+number = 10
+title = "imports/sync fails: column customers.customer_id does not exist"
+body = "Scheduled imports/sync runs fail because customers.customer_id is missing upstream. Closed after the upstream contract was restored."
+state = "closed"
+closed_at = "2026-01-02T09:00:00Z"
+
+[[issues]]
+number = 11
+title = "Archive copies are slow"
+body = "Calls with target=archive take longer than expected."
+state = "open"
+closed_at = ""
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 2
+gaps = []
+counts = {failure = 2}
+calls = [{function_call_id = "fc-first", status = "failure", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-second", status = "failure", enqueued_at = "2026-01-02T12:00:00Z"}]
+logs = """
+06:00 fc-first report build failed: column customers.customer_id does not exist
+12:00 fc-second report build failed: column customers.customer_id does not exist
+"""

@@ -6,9 +6,11 @@ import os
 import re
 import selectors
 import subprocess
+import sys
 import time
 import tomllib
-from collections import Counter
+import urllib.parse
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
 from pathlib import Path
@@ -17,6 +19,7 @@ from workshop import (
     SKILLS_DIR,
     Job,
     ToolError,
+    gh_json,
     github_file,
     handoff_text,
     markdown_table,
@@ -47,6 +50,33 @@ STATUSES = {
 MAX_LOG_BYTES = 2_000_000
 MAX_LOG_FILES = 20
 MAX_CALLS = 10_000
+ISSUES_FILE = "issues.json"  # candidate issues, beside evidence.json
+TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
+
+
+def candidate_issues(repo: str, since: str) -> list[dict]:
+    """Open issues, and issues closed since `since`, written by people with push access.
+
+    The tool's equivalent of the GitHub server's lockdown mode: in a public repo, a stranger's issue cannot instruct
+    the agent.
+    """
+    start = datetime.fromisoformat(since)
+    items = gh_json("api", f"repos/{repo}/issues?state=open&per_page=100") + gh_json(
+        "api", f"repos/{repo}/issues?state=closed&since={urllib.parse.quote(since)}&per_page=100"
+    )
+    return [
+        {
+            "number": item["number"],
+            "title": item["title"],
+            "body": item["body"] or "",
+            "state": item["state"],
+            "closed_at": item["closed_at"],
+        }
+        for item in items
+        if "pull_request" not in item
+        and item["author_association"] in TRUSTED_AUTHORS
+        and (item["state"] == "open" or datetime.fromisoformat(item["closed_at"]) >= start)
+    ]
 
 
 def read_config(text: str | None) -> dict:
@@ -307,6 +337,7 @@ def collect(config: dict, since: str, until: str, run_dir: Path) -> dict:
 
 
 def inspection_prompt(job: Job) -> str:
+    issues = job.log_path.parent / ISSUES_FILE
     return (
         "\n".join(
             [
@@ -318,6 +349,14 @@ def inspection_prompt(job: Job) -> str:
                 "Read the repository's AGENTS.md if present, and relevant code and documentation.",
                 f"Repair skills are in {SKILLS_DIR} and .workshop/skills/ in the checkout.",
                 "Read a repair skill's scope before recommending it; do not perform the repair.",
+                *(
+                    [
+                        f"Candidate issues: {issues}. "
+                        "Add an issue to the assessment as the skill's Issue section says."
+                    ]
+                    if issues.exists()
+                    else []
+                ),
                 f"Handoff directory: {job.handoff}",
             ]
         )
@@ -379,7 +418,210 @@ def assess(job: Job, evidence: dict) -> dict:
     return result
 
 
-def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
+# --- the publish check: issue text may name what the repository and the run metadata already show
+
+EDGE = "\"'`()[]{}<>,;:!?*."  # stripped from both ends of a word
+PIECES = re.compile(r"`[^`\n]+`|[^\s`]+")  # a backtick span, or a word up to the next backtick
+PARTS = re.compile(r"[.()'\"=,:/\[\]{}<>_-]")  # splits a known word into known pieces
+JOINS = re.compile(
+    r"[-–—,/_=]+"
+)  # joins known words, as in 00:00-06:00, accepted_values_orders_status or target=archive
+LINE_REF = re.compile(r"(.+):\d+(?:-\d+)?")  # a file and line, such as models/orders.sql:12
+
+
+def words(text: str) -> list[str]:
+    return [word for word in (piece.strip(EDGE) for piece in text.split()) if word]
+
+
+def time_tokens(value: str) -> set[str]:
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return {value}
+    times = {moment.strftime("%H:%M"), moment.strftime("%H:%M:%S")}
+    utc = (
+        {f"{time}Z" for time in [*times, moment.strftime("%Y-%m-%dT%H:%M:%S")]}
+        if moment.utcoffset() == timedelta(0)
+        else set()
+    )
+    return {value, moment.date().isoformat(), *times, *utc}
+
+
+def text_tokens(text: str) -> set[str]:
+    """Each word, and its pieces split on punctuation, so `customer_id` and `customer` are known from `x.customer_id`."""
+    return {token for word in words(text) for token in (word, *PARTS.split(word)) if token}
+
+
+def known_tokens(worktree: Path, evidence: dict, candidates: list[dict]) -> tuple[set[str], set[str]]:
+    """The repository's words, the candidate issues' words, which are public and by people with push access, and the
+    run metadata; and separately the repository's file paths and names.
+
+    Never the paths of saved logs or history, nor history fields other than the call ID, state and enqueue time:
+    those can hold source data.
+    """
+    known, files = set(), set()
+    for root, dirs, names in os.walk(worktree):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        for name in names:
+            path = Path(root, name)
+            if name == ".git" or path.is_symlink():
+                continue
+            files |= {path.relative_to(worktree).as_posix(), name}
+            known |= text_tokens(path.read_text(encoding="utf-8", errors="replace"))
+    known |= files
+    known |= time_tokens(evidence["since"]) | time_tokens(evidence["until"])
+    for item in evidence["functions"]:
+        known.add(item["function"])
+        known.update(item["counts"])
+        known.update(str(count) for count in [*item["counts"].values(), item.get("failures", 0)])
+        if item.get("history_path"):
+            for line in Path(item["history_path"]).read_text(encoding="utf-8").splitlines():
+                call = json.loads(line)
+                known.update((call["function_call_id"], call["status"]))
+                known |= time_tokens(call["enqueued_at"])
+    known.update(("function_call_id", "status", "enqueued_at"))  # the history's field names
+    for issue in candidates:
+        known.update((str(issue["number"]), f"#{issue['number']}"))
+        known |= text_tokens(issue.get("title", "") + "\n" + issue.get("body", ""))
+        if issue.get("closed_at"):
+            known |= time_tokens(issue["closed_at"])
+    return known, files
+
+
+def checked(word: str) -> bool:
+    return any(char.isdigit() or char in "@/_." for char in word)
+
+
+def joined(word: str, passes) -> bool:
+    """Whether `word` splits at one or more joins into pieces that each pass, as 2026-01-02T00:00:00Z-06:00:00Z does."""
+
+    def piece(start: int, end: int) -> bool:
+        return start == end or passes(word[start:end])  # an empty piece, as after a trailing _, passes
+
+    starts = [0]  # where a piece can start, after pieces that pass
+    for join in JOINS.finditer(word):
+        if any(piece(start, join.start()) for start in starts):
+            starts.append(join.end())
+    return any(piece(start, len(word)) for start in starts[1:])
+
+
+def unknown_tokens(text: str, known: set[str], files: set[str]) -> list[str]:
+    """Numbers, words containing @ / _ or ., and words in backticks that `known` does not hold, in text order.
+
+    `path:line` passes when `path` is one of the repository's `files`. A word joined from known words by dashes, commas, =,
+    slashes or underscores passes, as in 00:00-06:00 or a test name dbt builds from model and column names, unless it
+    starts with / or ~ like a local path.
+    """
+
+    def passes(word: str) -> bool:
+        ref = LINE_REF.fullmatch(word)
+        return word in known or bool(ref and ref[1] in files)
+
+    missing = []
+    for match in PIECES.finditer(text):
+        piece = match[0]
+        code = len(piece) > 1 and piece[0] == piece[-1] == "`"
+        for word in words(piece):
+            if not (code or checked(word)) or passes(word):
+                continue
+            if word[0] not in "/~" and joined(word, passes):
+                continue
+            if word not in missing:
+                missing.append(word)
+    return missing
+
+
+def copied_runs(text: str, logs: list[Path], size: int = 8) -> list[str]:
+    """Runs of `size` words in `text` that also appear in a log, ignoring case, in text order."""
+    mine = [word.lower() for word in words(text)]
+    runs = [tuple(mine[index : index + size]) for index in range(len(mine) - size + 1)]
+    wanted, found = set(runs), set()
+    for path in logs if wanted else []:
+        window = deque(maxlen=size)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as log:
+                for line in log:
+                    for word in words(line):
+                        window.append(word.lower())
+                        if tuple(window) in wanted:
+                            found.add(tuple(window))
+        except OSError:  # a log that was never saved is a coverage gap, reported elsewhere
+            continue
+    return list(dict.fromkeys(" ".join(run) for run in runs if run in found))
+
+
+MAX_LINK_CHARS = 8000  # GitHub rejects much longer URLs
+
+
+def new_issue_link(repo: str, title: str, body: str) -> str:
+    """GitHub's new-issue form, filled in: the owner reviews it and creates the issue."""
+    query = urllib.parse.urlencode({"title": title, "body": body}, quote_via=urllib.parse.quote)
+    return f"https://github.com/{repo}/issues/new?{query}"
+
+
+def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict, worktree: Path) -> list[str]:
+    """The matched issue's link, a link to create the proposed one after any words the publish check flags, or why
+    there is none."""
+    if result["status"] != "action-required":
+        return []
+    issue = result.get("issue")
+    states = {item["number"]: item["state"] for item in candidates}
+    if isinstance(issue, dict) and set(issue) == {"match"} and type(issue["match"]) is int:
+        number = issue["match"]
+        if number not in states:
+            return [f"No issue link: the assessment matched #{number}, which is not a candidate issue."]
+        return [f"Matches #{number} ({states[number]}): https://github.com/{repo}/issues/{number}"]
+    if not (
+        isinstance(issue, dict)
+        and set(issue) == {"title", "body"}
+        and all(isinstance(issue[key], str) and issue[key].strip() for key in ("title", "body"))
+        and "\n" not in issue["title"]
+    ):
+        return ["No issue link: the assessment proposed no issue."]
+    text = issue["title"] + "\n" + issue["body"]
+    logs = [Path(entry["path"]) for item in evidence["functions"] for entry in item["log_files"]]
+    known, files = known_tokens(worktree, evidence, candidates)
+    unknown = unknown_tokens(text, known | {repo}, files)
+    copied = copied_runs(text, logs)
+    flagged = (
+        [
+            "Check the flagged words before creating the issue:",
+            *(f"- not in the repository or run metadata: {word}" for word in unknown),
+            *(f"- copied from a log: {run}" for run in copied),
+        ]
+        if unknown or copied
+        else []
+    )
+    link = new_issue_link(repo, issue["title"], issue["body"])
+    if len(link) > MAX_LINK_CHARS:
+        return [*flagged, "No issue link: the proposed issue is too long for a link; see the full report."]
+    return [*flagged, *([""] if flagged else []), f"Create the issue: {link}"]
+
+
+HYPERLINK_TERMINALS = {
+    "iTerm.app",
+    "ghostty",
+    "vscode",
+    "WezTerm",
+}  # TERM_PROGRAM values that show OSC 8 links
+NEW_ISSUE_LINE = re.compile(r"(?m)^(Create the issue: )(https://\S+)$")
+
+
+def show_links(text: str, terminal: str | None) -> str:
+    """Show each new-issue link as its title, linked, in a terminal that supports hyperlinks."""
+    if terminal not in HYPERLINK_TERMINALS:
+        return text
+
+    def linked(match: re.Match) -> str:
+        [title] = urllib.parse.parse_qs(urllib.parse.urlsplit(match[2]).query)["title"]
+        return f"{match[1]}\033]8;;{match[2]}\033\\{title}\033]8;;\033\\"
+
+    return NEW_ISSUE_LINE.sub(linked, text)
+
+
+def report(
+    repo: str, evidence: dict, result: dict, *, verbose: bool = False, issue: list[str] | None = None
+) -> str:
     label = STATUSES[result["status"]] + (" (incomplete coverage)" if result["gaps"] else "")
     lines = [f"{'# ' if verbose else ''}{repo}: {label}", "", result["summary"]]
     if verbose:
@@ -413,6 +655,12 @@ def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) ->
     if result["gaps"]:
         lines += ["", "Coverage gaps:", "", *(f"- {gap}" for gap in result["gaps"])]
     lines += ["", f"Next step: {result['next_step']}"]
+    if issue:
+        lines += ["", *issue]
+        proposal = result.get("issue")
+        if verbose and isinstance(proposal, dict) and isinstance(proposal.get("title"), str):
+            lines += ["", "Proposed issue:", "", f"> {proposal['title']}", ">"]
+            lines += [f"> {line}".rstrip() for line in str(proposal.get("body", "")).splitlines()]
     if verbose:
         lines += [
             "",
@@ -466,9 +714,23 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     run_dir = home / "logs" / name / timestamp("%Y%m%dT%H%M%S.%fZ")
     job = inspection_job(args.repo, base, clone, worktree, run_dir, args)
     evidence = collect(config, since, until, run_dir)
+    candidates, unreadable = [], ""
+    if args.issue and any(item["failures"] for item in evidence["functions"]):
+        try:
+            candidates = candidate_issues(args.repo, since)
+        except ToolError as exc:
+            unreadable = str(exc)
+        else:
+            (run_dir / ISSUES_FILE).write_text(json.dumps(candidates, indent=2), encoding="utf-8")
     result = assess(job, evidence)
-    output = report(args.repo, evidence, result, verbose=True)
+    issue = None
+    if args.issue:
+        issue = issue_lines(args.repo, result, candidates, evidence, worktree)
+        if unreadable and issue:
+            issue = [f"No issue link: could not read {args.repo}'s issues: {unreadable}"]
+    output = report(args.repo, evidence, result, verbose=True, issue=issue)
     (run_dir / "report.md").write_text(output, encoding="utf-8")
-    print(output if args.verbose else report(args.repo, evidence, result))
+    terminal = os.environ.get("TERM_PROGRAM") if sys.stdout.isatty() else None
+    print(show_links(output if args.verbose else report(args.repo, evidence, result, issue=issue), terminal))
     print(f"Report: {run_dir / 'report.md'}")
     return {"ok": 0, "ok-after-review": 0, "action-required": 2, "unable-to-assess": 1}[result["status"]]

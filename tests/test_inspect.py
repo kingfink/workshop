@@ -2,6 +2,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def job(tmp_path):
     )
 
 
-def agent(monkeypatch, status="ok-after-review", code=0):
+def agent(monkeypatch, status="ok-after-review", code=0, issue=None):
     runs = []
 
     def invoke(job, prompt):
@@ -67,6 +68,7 @@ def agent(monkeypatch, status="ok-after-review", code=0):
                     "summary": "The replay covered the failed interval.",
                     "evidence": ["fc-recovered committed the failed interval."],
                     "next_step": "No action remains.",
+                    **({"issue": issue} if issue else {}),
                 }
             )
         )
@@ -534,3 +536,331 @@ def test_inspection_evals_grade_assessments_without_a_dbt_build(tmp_path, monkey
     assert workshop.main(["eval", "--skill", "assess-failure"]) == 0
     result = json.loads((tmp_path / ".workshop/logs/evals.jsonl").read_text())
     assert result["passed"] and result["fix_attempts"] == 0
+
+
+def flag(command, name):
+    return command[command.index(name) + 1]
+
+
+def test_candidate_issues_keep_trusted_authors_and_closures_in_the_window(monkeypatch):
+    queries = []
+
+    def issue(number, association, state="open", closed_at=None, **extra):
+        return {
+            "number": number,
+            "title": f"t{number}",
+            "body": None,
+            "state": state,
+            "closed_at": closed_at,
+            "author_association": association,
+            "labels": [],
+            **extra,
+        }
+
+    def api(*args):
+        queries.append(args[-1])
+        if "state=open" in args[-1]:
+            return [
+                issue(1, "OWNER"),
+                issue(2, "NONE"),
+                issue(3, "CONTRIBUTOR"),
+                issue(4, "MEMBER", pull_request={}),
+            ]
+        return [
+            issue(5, "COLLABORATOR", "closed", "2026-01-02T08:00:00Z"),
+            issue(6, "OWNER", "closed", "2026-01-01T08:00:00Z"),
+        ]
+
+    monkeypatch.setattr(inspect, "gh_json", api)
+    issues = inspect.candidate_issues("acme/analytics", SINCE)
+    assert [item["number"] for item in issues] == [1, 5]
+    assert issues[0] == {"number": 1, "title": "t1", "body": "", "state": "open", "closed_at": None}
+    assert queries[0].startswith("repos/acme/analytics/issues?state=open")
+    assert "state=closed" in queries[1] and "since=2026-01-02T00%3A00%3A00%2B00%3A00" in queries[1]
+
+
+def test_inspection_agent_may_read_candidate_issues(tmp_path):
+    inspection = job(tmp_path)
+    allowed = flag(workshop.claude_command(inspection), "--allowedTools").split(",")
+    assert f"Read(/{inspection.log_path.parent / inspect.ISSUES_FILE})" in allowed
+
+
+def publish_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "models").mkdir(parents=True)
+    (repo / "models" / "orders.sql").write_text(
+        "select customer_email from orders\nleft join customers on orders.customer_id = customers.customer_id\n"
+    )
+    (repo / "seed.bin").write_bytes(b"\xff\x00\xfe")
+    history = tmp_path / "history.jsonl"
+    history.write_text(json.dumps({**call("failure", "fc-first"), "input": "secret-7"}) + "\n")
+    log = tmp_path / "logs" / "000.log"
+    log.parent.mkdir()
+    log.write_text(
+        "06:00 fc-first load failed: Upstream returned an unexpected value for the search type field\n"
+    )
+    evidence = {
+        "since": SINCE,
+        "until": UNTIL,
+        "functions": [
+            {
+                "function": "imports/sync",
+                "counts": {"failure": 1},
+                "history_path": str(history),
+                "log_files": [{"path": str(log), "scope": "call", "call_id": "fc-first"}],
+            }
+        ],
+    }
+    return repo, evidence, log
+
+
+def test_publish_check_allows_repository_and_run_metadata(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [{"number": 12}])
+    text = (
+        "`imports/sync` run fc-first failed at 06:00 on 2026-01-02 (1 failure) at "
+        "models/orders.sql:1 on `customer_email`; see #12. Its enqueued_at, status and function_call_id fields."
+    )
+    assert inspect.unknown_tokens(text, known, files) == []
+
+
+def test_publish_check_blocks_values_paths_and_numbers_from_elsewhere(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [])
+    text = f"Rows like a@example.com and 48213 subscribers, `discover`, secret-7 in {log}."
+    assert inspect.unknown_tokens(text, known, files) == [
+        "a@example.com",
+        "48213",
+        "discover",
+        "secret-7",
+        str(log),
+    ]
+
+
+def test_publish_check_allows_ranges_column_names_and_candidate_times(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [{"number": 10, "closed_at": "2026-01-02T09:00:00Z"}])
+    text = (
+        "The 2026-01-02 00:00-06:00 window, interval [00:00,06:00) or 00:00–06:00, lacks `customer_id` "
+        "(orders.sql:2) since #10 closed at 2026-01-02T09:00:00Z, after fc-first at 06:00:00Z or 06:00Z, "
+        "in 2026-01-02T00:00:00Z-06:00:00Z."
+    )
+    assert inspect.unknown_tokens(text, known, files) == []
+    assert inspect.unknown_tokens("2026-01-02T00:00:00Z-48213", known, files) == [
+        "2026-01-02T00:00:00Z-48213"
+    ]
+
+
+def test_publish_check_blocks_code_beside_punctuation_and_numbers_after_words(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    known, files = inspect.known_tokens(repo, evidence, [])
+    text = (
+        "Values (`acme-customer`) and see:`discover` with customers:48213, failure:48213, "
+        "secret-7, customer_id-48213 and 000-000.log."
+    )
+    assert inspect.unknown_tokens(text, known, files) == [
+        "acme-customer",
+        "discover",
+        "customers:48213",
+        "failure:48213",
+        "secret-7",
+        "customer_id-48213",
+        "000-000.log",
+    ]
+
+
+def test_publish_check_blocks_eight_words_copied_from_a_log(tmp_path):
+    _, _, log = publish_fixture(tmp_path)
+    text = "It failed because upstream returned an unexpected value, for the search type."
+    assert inspect.copied_runs(text, [log]) == [
+        "upstream returned an unexpected value for the search",
+        "returned an unexpected value for the search type",
+    ]
+    assert inspect.copied_runs("an unexpected value for the search type", [log]) == []
+
+
+def test_new_issue_link_is_populated_and_escaped():
+    link = inspect.new_issue_link("acme/analytics", "Sync fails", "Line one\n\n`a+b` & more")
+    assert link.startswith("https://github.com/acme/analytics/issues/new?title=Sync%20fails&body=")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+    assert query == {"title": ["Sync fails"], "body": ["Line one\n\n`a+b` & more"]}
+
+
+CANDIDATES = [{"number": 12, "title": "t", "body": "", "state": "open", "closed_at": None}]
+
+
+@pytest.mark.parametrize(
+    "status, issue, first",
+    [
+        ("ok-after-review", {"title": "Sync fails", "body": "Rerun it."}, None),
+        ("action-required", None, "No issue link: the assessment proposed no issue."),
+        ("action-required", {"title": "Sync fails"}, "No issue link: the assessment proposed no issue."),
+        (
+            "action-required",
+            {"match": 12},
+            "Matches #12 (open): https://github.com/acme/analytics/issues/12",
+        ),
+        (
+            "action-required",
+            {"match": 99},
+            "No issue link: the assessment matched #99, which is not a candidate issue.",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun it."},
+            "Create the issue: https://github.com/acme/analytics/issues/new?",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun the acme/analytics imports."},
+            "Create the issue: https://github.com/acme/analytics/issues/new?",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "48213 subscribers"},
+            "Check the flagged words before creating the issue:",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun it. " * 2000},
+            "No issue link: the proposed issue is too long for a link; see the full report.",
+        ),
+    ],
+)
+def test_issue_lines(tmp_path, status, issue, first):
+    repo, evidence, _ = publish_fixture(tmp_path)
+    result = {"status": status, **({"issue": issue} if issue else {})}
+    lines = inspect.issue_lines("acme/analytics", result, CANDIDATES, evidence, repo)
+    assert lines[0].startswith(first) if first else lines == []
+    if issue and "48213" in issue.get("body", ""):
+        assert lines[1] == "- not in the repository or run metadata: 48213"
+        assert lines[-2:] == ["", lines[-1]]  # a blank line before the link
+        assert lines[-1].startswith("Create the issue: https://github.com/acme/analytics/issues/new?")
+
+
+@pytest.mark.parametrize("terminal", ["iTerm.app", "ghostty", "vscode", None, "Apple_Terminal"])
+def test_new_issue_link_is_a_terminal_hyperlink_where_supported(terminal):
+    link = inspect.new_issue_link("acme/analytics", "Sync fails", "Rerun it.")
+    text = f"Summary\n\nCreate the issue: {link}\nReport: report.md"
+    shown = inspect.show_links(text, terminal)
+    if terminal in ("iTerm.app", "ghostty", "vscode"):
+        assert shown == text.replace(link, f"\033]8;;{link}\033\\Sync fails\033]8;;\033\\")
+    else:
+        assert shown == text
+
+
+TRUSTED = {
+    "number": 12,
+    "title": "Sync fails",
+    "body": "b",
+    "state": "open",
+    "closed_at": None,
+    "author_association": "OWNER",
+}
+STRANGER = {**TRUSTED, "number": 13, "author_association": "NONE"}
+
+
+def test_issue_flag_offers_a_link_and_writes_nothing_to_github(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG}, repo_issues=[TRUSTED, STRANGER])
+    collector(monkeypatch, [call("failure")])
+    agent(
+        monkeypatch, status="action-required", issue={"title": "Sync fails", "body": "Rerun after the fix."}
+    )
+    assert fake.run("inspect", "acme/analytics", "--issue") == 2
+    output = capsys.readouterr().out
+    assert "Create the issue: https://github.com/acme/analytics/issues/new?title=Sync%20fails" in output
+    run_dir = next((fake.home / ".workshop/logs").glob("*-inspect/*"))
+    assert [item["number"] for item in json.loads((run_dir / "issues.json").read_text())] == [12]
+    assert "Proposed issue:" in (run_dir / "report.md").read_text()
+    for command in (("issue", "create"), ("issue", "edit"), ("issue", "comment")):
+        assert not fake.calls(*command)
+
+
+def test_without_the_issue_flag_no_issues_are_read(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG}, repo_issues=[TRUSTED])
+    collector(monkeypatch, [call("failure")])
+    agent(monkeypatch, status="action-required", issue={"match": 12})
+    assert fake.run("inspect", "acme/analytics") == 2
+    assert "Matches #12" not in capsys.readouterr().out
+    assert not any("/issues?" in str(arg) for command in fake.state["calls"] for arg in command)
+
+
+def test_unreadable_issues_still_report_the_assessment(fake, monkeypatch, capsys):
+    fake.set(default_branch_files={inspect.CONFIG: CONFIG})
+
+    def unreachable(repo, since):
+        raise workshop.ToolError("gh: rate limited (HTTP 403)")
+
+    monkeypatch.setattr(inspect, "candidate_issues", unreachable)
+    collector(monkeypatch, [call("failure")])
+    agent(monkeypatch, status="action-required")
+    assert fake.run("inspect", "acme/analytics", "--issue") == 2
+    output = capsys.readouterr().out
+    assert "Action required" in output and "No issue link: could not read acme/analytics's issues" in output
+
+
+@pytest.mark.parametrize(
+    "body, passed", [("Replay the failed interval.", True), ("48213 subscribers", False)]
+)
+def test_inspection_evals_grade_issue_proposals(tmp_path, monkeypatch, body, passed):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent(monkeypatch, status="action-required", issue={"title": "Sync fails", "body": body})
+    monkeypatch.setattr(workshop_eval, "judge", lambda *args, **kwargs: True)
+    case = next(
+        case
+        for case in workshop_eval.load_cases("assess-failure")
+        if case["name"] == "assess-failure-issue-private-values"
+    )
+    monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
+    workshop.main(["eval", "--skill", "assess-failure"])
+    result = json.loads((tmp_path / ".workshop/logs/evals.jsonl").read_text())
+    assert result["passed"] is passed
+    if not passed:
+        assert "48213" in result["why"]  # names the flagged word
+
+
+def test_inspection_prompt_names_candidate_issues_only_when_fetched(tmp_path):
+    inspection = job(tmp_path)
+    assert "Candidate issues" not in inspect.inspection_prompt(inspection)
+    (inspection.log_path.parent / inspect.ISSUES_FILE).write_text("[]")
+    assert (
+        f"Candidate issues: {inspection.log_path.parent / inspect.ISSUES_FILE}"
+        in inspect.inspection_prompt(inspection)
+    )
+
+
+def test_publish_check_allows_words_joined_from_known_pieces(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    (repo / "models" / "orders.yml").write_text(
+        "columns:\n  - name: status\n    tests:\n      - accepted_values:\n          values: [open, closed]\n"
+        "      - relationships:\n          to: ref('dim_customers')\n"
+    )
+    known, files = inspect.known_tokens(repo, evidence, [])
+    text = (
+        "1/1 runs failed `accepted_values_orders_status__open__closed` and "
+        "relationships_orders_customer_id__customer_id__ref_dim_customers_, for `status=open`."
+    )
+    assert inspect.unknown_tokens(text, known, files) == []
+    blocked = "orders_48213, jane_doe, `status-pending`, `status=pending` and /models/orders.sql"
+    assert inspect.unknown_tokens(blocked, known, files) == [
+        "orders_48213",
+        "jane_doe",
+        "status-pending",
+        "status=pending",
+        "/models/orders.sql",
+    ]
+
+
+def test_publish_check_allows_words_from_candidate_issues(tmp_path):
+    repo, evidence, log = publish_fixture(tmp_path)
+    candidate = {
+        "number": 10,
+        "title": "imports/sync fails: column customers.customer_id does not exist",
+        "body": "Closed after the upstream contract was restored.",
+        "closed_at": None,
+    }
+    known, files = inspect.known_tokens(repo, evidence, [candidate])
+    assert (
+        inspect.unknown_tokens("The error `customers.customer_id does not exist` recurs.", known, files) == []
+    )
+    assert inspect.unknown_tokens("`customers.customer_id does not exist 48213`", known, files) == ["48213"]

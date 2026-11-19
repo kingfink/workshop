@@ -412,6 +412,7 @@ def claude_command(job: Job) -> list[str]:
             f"Read(/{job.log_path.parent / 'evidence.json'})",
             f"Read(/{job.log_path.parent / 'logs'}/**)",
             f"Read(/{job.log_path.parent / 'history'}/**)",
+            f"Read(/{job.log_path.parent / 'issues.json'})",
             f"Edit(/{job.handoff / 'assessment.json'})",
         ]
     return [
@@ -1082,6 +1083,11 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--verbose", action="store_true", help="print the full inspection report")
     inspect.add_argument("--since", default="24h", help="look back this long (default: 24h); e.g. 30m or 7d")
     inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
+    inspect.add_argument(
+        "--issue",
+        action="store_true",
+        help="propose an issue for action required, or the one it matches; publishes nothing",
+    )
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
     evals.add_argument(
@@ -1094,7 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
         "--changed", action="store_true", help="only the cases whose inputs differ from the default branch"
     )
     evals.add_argument("--runs", type=int, default=1, help="runs of each case")
-    evals.add_argument("--budget", type=float, default=2.0, help="API-equivalent dollars for all the runs")
+    evals.add_argument("--budget", type=float, default=5.0, help="API-equivalent dollars for all the runs")
     evals.add_argument("--max-fix-attempts", type=int, default=1)
     evals.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     commands = {

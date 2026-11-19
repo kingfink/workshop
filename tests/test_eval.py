@@ -109,7 +109,7 @@ def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
     assert "Compilation Error" in fix
     [phone] = [prompt for prompt, _ in runs if "# Add phone number to dim_customers" in prompt]
     assert "This job has no github tools" in phone
-    share = f"{2 / len(workshop_eval.load_cases('add-fields')):.2f}"  # an equal share of the $2 default
+    share = f"{5 / len(workshop_eval.load_cases('add-fields')):.2f}"  # an equal share of the $5 default
     assert runs[0][1] == ["--tools", "Bash,Read,Edit,Write", "--max-budget-usd", share]
     assert "| add-fields-plan-tier | 1 of 1 |" in capsys.readouterr().out
 

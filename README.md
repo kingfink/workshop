@@ -90,6 +90,8 @@ The terminal shows the outcome, a short summary and the next step. The full repo
 
 Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
 
+`--issue` also proposes an issue when the result is Action required. The agent matches one of the repo's open or recently closed issues, or drafts a new one, and the terminal links to it or to GitHub's new-issue form filled in, for you to review and submit. Before offering a new issue, the tool flags any number, identifier or log excerpt that isn't in the repository, its issues or the run metadata. Inspect still writes nothing to GitHub.
+
 ### eval
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
@@ -102,7 +104,7 @@ Inspection cases provide made-up job histories, logs and repository context. The
 | `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
 | `--changed` | off | Only the cases whose inputs differ from where this branch left the default branch, `origin/HEAD`, counting uncommitted and new files. A case's inputs are its case file, its fixture and the `SKILL.md` of each skill it uses, the `workshop` skill included except in inspection cases. A change to `workshop.py`, `workshop_eval.py` or `workshop_inspect.py`, which hold the prompts and grading, selects every case. |
 | `--runs` | `1` | Runs of each case. |
-| `--budget` | `2` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
+| `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 
@@ -129,7 +131,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
-- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell.
+- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `--issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -191,9 +193,9 @@ Add a batch mode that works through open Dependabot PRs and returns one consolid
 
 ### Jobs from telemetry
 
-Let `inspect` create or reuse an issue when `assess-failure` identifies outstanding work. The assessment proposes the issue; Workshop publishes it with the evidence, next step, verification and an applicable repair skill. Recovered failures create no issue. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue. Reuse issues across inspections of the same unresolved problem.
+`inspect --issue` proposes an issue, or matches an existing one, for the owner to review and create. Next, publish it without review once the publish check and its evals have earned trust, and name a repair skill in a form the queue can use, so a schedule can run queued issues. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue.
 
-The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed.
+The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed, matching their findings against the same issues.
 
 ### More job skills
 
@@ -216,3 +218,7 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
+
+### Publishing issues without review
+
+Before `inspect` posts issues itself, block any issue that fails the publish check, and add a second check: a separate model that sees only the proposed issue and the rules for public text, and blocks the issue if it finds a data value. Keep data out of what the inspect agent reads, too, such as row values and failing-row samples in logs, so it has none to repeat.

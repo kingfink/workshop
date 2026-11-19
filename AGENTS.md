@@ -10,6 +10,7 @@ Build the smallest thing that meets the need. Anything else is easy to add later
 
 - Keep the state between runs on GitHub: issue labels, issue comments and the pull request. Files under `~/.workshop/` are only clones, worktrees, logs, eval runs, and the handoff and the copy of the target repo's skills from the run in progress.
 - Give the agent no credentials it does not need. The tool does every write to GitHub.
+- Show the agent nothing on GitHub written by people without push access. GitHub's server runs with `--lockdown-mode`, and anything the tool fetches for the agent keeps only authors whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`.
 - Keep every command safe to rerun. After a crash or an answered question, a rerun picks up where the last run stopped.
 - Reach the agent only through `invoke_agent`.
 

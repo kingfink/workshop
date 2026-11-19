@@ -38,6 +38,11 @@ def gh(state, args):
             return f"gh: {name} failed (HTTP 500)"
     if command == ["auth", "status"]:
         return 0 if state.get("gh_auth_ok", True) else 1
+    elif args[0] == "api" and "/issues?" in args[-1]:  # api repos/<repo>/issues?state=<state>&...
+        wanted = re.search(r"state=(\w+)", args[-1])[1]
+        sys.stdout.write(
+            json.dumps([item for item in state.get("repo_issues", []) if item["state"] == wanted])
+        )
     elif (
         args[0] == "api"
     ):  # api -H <accept> repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it
