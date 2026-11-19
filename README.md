@@ -99,10 +99,14 @@ Inspection cases provide made-up job histories, logs and repository context. The
 | Option | Default | |
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
+| `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
+| `--changed` | off | Only the cases whose inputs differ from where this branch left the default branch, `origin/HEAD`, counting uncommitted and new files. A case's inputs are its case file, its fixture and the `SKILL.md` of each skill it uses, the `workshop` skill included except in inspection cases. A change to `workshop.py`, `workshop_eval.py` or `workshop_inspect.py`, which hold the prompts and grading, selects every case. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `2` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
+
+`--skill`, `--case` and `--changed` combine: a case runs if it meets each one given.
 
 Each run's record goes in `~/.workshop/logs/evals.jsonl`, and its files in `~/.workshop/evals/runs/`.
 
@@ -212,4 +216,3 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
-- Changed cases only: an `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.
