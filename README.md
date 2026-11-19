@@ -161,6 +161,10 @@ A run that is killed before it can clean up, such as by a power cut, leaves the 
 
 One `other` skill for issues that no job skill covers. It adds one rule to the `workshop` skill: before editing, state what done is and the check that will prove it, such as an existing test, a build or a query, and ask if there is none. The pull request names the kind of work, so `score` shows which kinds recur and how they end. Start with jobs that end in a pull request; questions need the answer outcome.
 
+### Selective evals
+
+An `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.
+
 ### Answer outcome
 
 Let a job end in a comment on the issue with no pull request, beside a question and a pull request. The agent leaves the answer in the handoff directory and the tool posts it. Reports, surveys and questions need this.
@@ -214,4 +218,3 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
-- Changed cases only: an `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.
