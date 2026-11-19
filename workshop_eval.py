@@ -28,6 +28,7 @@ from workshop import (
     initial_prompt,
     invoke_agent,
     markdown_table,
+    pull_request_kind,
     save_record,
     sh,
     skill_records,
@@ -300,7 +301,8 @@ def grade(job: Job, case: dict, fixture: Fixture) -> tuple[bool, str, str]:
         return False, f"asked instead: {question.splitlines()[0][:120]}", ""
     if not changed:
         return False, "committed nothing", ""
-    if not handoff_text(job, "pull-request.md"):
+    pull_request = handoff_text(job, "pull-request.md")
+    if not pull_request:
         return False, "wrote no pull-request.md", ""
     if outside := [
         path for path in changed if not (path.startswith("models/") and path.endswith((".sql", ".yml")))
@@ -319,6 +321,12 @@ def grade(job: Job, case: dict, fixture: Fixture) -> tuple[bool, str, str]:
     for check in case.get("queries", []):
         if (rows := query(fixture, project, check["sql"])) != check["rows"]:
             return False, f"`{check['sql']}` returned {rows}", ""
+    if case.get("kind_line") and not pull_request_kind(pull_request.partition("\n")[2]):
+        return False, "wrote no Kind line in pull-request.md", ""
+    if (criterion := case.get("pull_request")) and not judge(
+        pull_request, criterion, job.clone.parent, "pull request"
+    ):
+        return False, f"the pull request does not {criterion}", ""
     return True, "changed it, and every check passes", ""
 
 
