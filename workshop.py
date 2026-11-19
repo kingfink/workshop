@@ -1084,6 +1084,15 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
+    evals.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="only this case, by file name without .toml; comma-separated or repeated",
+    )
+    evals.add_argument(
+        "--changed", action="store_true", help="only the cases whose inputs differ from the default branch"
+    )
     evals.add_argument("--runs", type=int, default=1, help="runs of each case")
     evals.add_argument("--budget", type=float, default=2.0, help="API-equivalent dollars for all the runs")
     evals.add_argument("--max-fix-attempts", type=int, default=1)

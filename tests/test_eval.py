@@ -191,3 +191,93 @@ def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
     result = eval_results(tmp_path)[case["name"]]
     assert result["passed"] is (change is None)
     assert result["why"] == ("asked" if change is None else "changed files before asking")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--case", "add-fields-plan-tier,add-fields-two-emails"],
+        ["--case", "add-fields-plan-tier", "--case", "add-fields-two-emails"],
+    ],
+    ids=["comma-separated", "repeated"],
+)
+def test_eval_runs_named_cases(tmp_path, monkeypatch, options):
+    runs = agent_that(tmp_path, monkeypatch)
+    assert workshop.main(["eval", *options, "--budget", "1"]) == 0
+    assert eval_results(tmp_path).keys() == {"add-fields-plan-tier", "add-fields-two-emails"}
+    assert runs[0][1][-1] == "0.50"  # the budget is split between the cases that run
+
+
+@pytest.mark.parametrize(
+    "options",
+    [["--case", "add-fields-plan-teir"], ["--skill", "remove-fields", "--case", "add-fields-plan-tier"]],
+)
+def test_eval_rejects_unknown_cases(tmp_path, monkeypatch, capsys, options):
+    runs = agent_that(tmp_path, monkeypatch)
+    assert workshop.main(["eval", *options]) == 1
+    error = capsys.readouterr().err
+    assert options[-1] in error and "remove-fields-multiple" in error  # lists the valid names
+    assert not runs
+
+
+@pytest.mark.parametrize(
+    "changed, selected",
+    [
+        ({"README.md", "tests/test_eval.py"}, lambda case: False),
+        ({"evals/cases/add-fields-plan-tier.toml"}, lambda case: case["name"] == "add-fields-plan-tier"),
+        (
+            {"evals/fixtures/scheduled-build/repo/README.md"},
+            lambda case: case["fixture"] == "scheduled-build",
+        ),
+        ({"skills/remove-fields/SKILL.md"}, lambda case: "remove-fields" in case["skills"]),
+        ({"skills/workshop/SKILL.md"}, lambda case: case.get("kind") != "inspection"),
+        ({"workshop_inspect.py"}, lambda case: True),
+    ],
+    ids=["other files", "case file", "fixture", "skill", "workshop skill", "tool code"],
+)
+def test_changed_cases(changed, selected):
+    cases = workshop_eval.load_cases(None)
+    expected = [case["name"] for case in cases if selected(case)]
+    assert [case["name"] for case in workshop_eval.select_cases(cases, [], changed)] == expected
+
+
+def test_eval_runs_changed_cases(tmp_path, monkeypatch, capsys):
+    agent_that(tmp_path, monkeypatch)
+    changed = {"evals/cases/add-fields-plan-tier.toml", "evals/cases/remove-fields-multiple.toml"}
+    monkeypatch.setattr(workshop_eval, "changed_files", lambda: changed)
+    assert workshop.main(["eval", "--changed", "--skill", "add-fields"]) == 0
+    assert eval_results(tmp_path).keys() == {"add-fields-plan-tier"}
+
+
+def test_eval_with_no_changed_cases_runs_nothing(tmp_path, monkeypatch, capsys):
+    runs = agent_that(tmp_path, monkeypatch)
+    monkeypatch.setattr(workshop_eval, "changed_files", lambda: {"README.md"})
+    assert workshop.main(["eval", "--changed"]) == 0
+    assert not runs and "No case's inputs differ" in capsys.readouterr().out
+
+
+def test_changed_files_since_the_default_branch(tmp_path, monkeypatch):
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "test")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@localhost")
+    origin, work = tmp_path / "origin", tmp_path / "work"
+
+    def commit(repo, names):
+        for name in names:
+            (repo / name).write_text(f"{repo.name}\n")
+        workshop.git("-C", repo, "add", "--all")
+        workshop.git("-C", repo, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Change")
+
+    origin.mkdir()
+    workshop.git("init", "--quiet", "--initial-branch", "main", origin)
+    commit(origin, ["committed", "staged", "unstaged", "unchanged"])
+    workshop.git("clone", "--quiet", origin, work)
+    workshop.git("-C", work, "switch", "--quiet", "-c", "feature")
+    commit(work, ["committed"])
+    (work / "staged").write_text("changed\n")
+    workshop.git("-C", work, "add", "staged")
+    (work / "unstaged").write_text("changed\n")
+    (work / "untracked").write_text("new\n")
+    commit(origin, ["later"])  # on the default branch after this branch left it
+    workshop.git("-C", work, "fetch", "--quiet")
+    assert workshop_eval.changed_files(work) == {"committed", "staged", "unstaged", "untracked"}
