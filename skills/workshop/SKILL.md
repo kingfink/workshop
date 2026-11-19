@@ -30,7 +30,13 @@ Write one question with concrete options to `question.md`, then stop.
 
 ## Done
 
-Before you edit, decide what done is and the check that will show it, such as a test, a query or a command. See the check fail without your change, on the default branch: a build or test suite that already passes there is not that check. If you find no check that fails, such as when you cannot reproduce a problem the issue reports, ask. If the check cannot run in the sandbox, name it in the pull request instead. Run the check again before you finish.
+Before you edit:
+
+1. Decide what done is.
+2. Choose the check that will show it, such as a test, a query or a command, and run it on the default branch. It must fail there. A build or test suite that passes there is not that check, though you still run it.
+3. If you find no check that fails, such as when you cannot reproduce a problem the issue reports, ask.
+
+If the check cannot run in the sandbox, name it in the pull request instead. Run the check again before you finish.
 
 ## Working
 
@@ -50,7 +56,7 @@ A one-off decision stays in the issue thread. If the owner's answer is a standin
 
 ## Pull request
 
-Write `pull-request.md`: the title on the first line, then the body. The title states the change. The body gives a short summary, the check with its results before and after your change, anything your skills ask you to report, and `Closes #<issue>`.
+Write `pull-request.md`: the title on the first line, then the body. The title states the change. The body gives a short summary, the check with its failing result before your change and its passing result after, anything your skills ask you to report, and `Closes #<issue>`.
 
 If you are told that checks failed, fix the cause and commit it on the same branch.
 
