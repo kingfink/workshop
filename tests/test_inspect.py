@@ -2,6 +2,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -635,3 +636,55 @@ def test_publish_check_blocks_eight_words_copied_from_a_log(tmp_path):
         "returned an unexpected value for the search type",
     ]
     assert inspect.copied_runs("an unexpected value for the search type", [log]) == []
+
+
+def test_new_issue_link_is_populated_and_escaped():
+    link = inspect.new_issue_link("acme/analytics", "Sync fails", "Line one\n\n`a+b` & more")
+    assert link.startswith("https://github.com/acme/analytics/issues/new?title=Sync%20fails&body=")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+    assert query == {"title": ["Sync fails"], "body": ["Line one\n\n`a+b` & more"]}
+
+
+CANDIDATES = [{"number": 12, "title": "t", "body": "", "state": "open", "closed_at": None}]
+
+
+@pytest.mark.parametrize(
+    "status, issue, first",
+    [
+        ("ok-after-review", {"title": "Sync fails", "body": "Rerun it."}, None),
+        ("action-required", None, "No issue link: the assessment proposed no issue."),
+        ("action-required", {"title": "Sync fails"}, "No issue link: the assessment proposed no issue."),
+        (
+            "action-required",
+            {"match": 12},
+            "Matches #12 (open): https://github.com/acme/analytics/issues/12",
+        ),
+        (
+            "action-required",
+            {"match": 99},
+            "No issue link: the assessment matched #99, which is not a candidate issue.",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun it."},
+            "Create the issue: https://github.com/acme/analytics/issues/new?",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "48213 subscribers"},
+            "No issue link: the proposed issue failed the publish check.",
+        ),
+        (
+            "action-required",
+            {"title": "Sync fails", "body": "Rerun it. " * 2000},
+            "No issue link: the proposed issue is too long for a link; see the full report.",
+        ),
+    ],
+)
+def test_issue_lines(tmp_path, status, issue, first):
+    repo, evidence, _ = publish_fixture(tmp_path)
+    result = {"status": status, **({"issue": issue} if issue else {})}
+    lines = inspect.issue_lines("acme/analytics", result, CANDIDATES, evidence, repo)
+    assert lines[0].startswith(first) if first else lines == []
+    if issue and "48213" in issue.get("body", ""):
+        assert "- not in the repository or run metadata: 48213" in lines

@@ -491,6 +491,49 @@ def copied_runs(text: str, logs: list[Path], size: int = 8) -> list[str]:
     return list(dict.fromkeys(" ".join(run) for run in runs if run in found))
 
 
+MAX_LINK_CHARS = 8000  # GitHub rejects much longer URLs
+
+
+def new_issue_link(repo: str, title: str, body: str) -> str:
+    """GitHub's new-issue form, filled in: the owner reviews it and creates the issue."""
+    query = urllib.parse.urlencode({"title": title, "body": body}, quote_via=urllib.parse.quote)
+    return f"https://github.com/{repo}/issues/new?{query}"
+
+
+def issue_lines(repo: str, result: dict, candidates: list[dict], evidence: dict, worktree: Path) -> list[str]:
+    """The matched issue's link, a link to create the proposed one, or why there is none."""
+    if result["status"] != "action-required":
+        return []
+    issue = result.get("issue")
+    states = {item["number"]: item["state"] for item in candidates}
+    if isinstance(issue, dict) and set(issue) == {"match"} and type(issue["match"]) is int:
+        number = issue["match"]
+        if number not in states:
+            return [f"No issue link: the assessment matched #{number}, which is not a candidate issue."]
+        return [f"Matches #{number} ({states[number]}): https://github.com/{repo}/issues/{number}"]
+    if not (
+        isinstance(issue, dict)
+        and set(issue) == {"title", "body"}
+        and all(isinstance(issue[key], str) and issue[key].strip() for key in ("title", "body"))
+        and "\n" not in issue["title"]
+    ):
+        return ["No issue link: the assessment proposed no issue."]
+    text = issue["title"] + "\n" + issue["body"]
+    logs = [Path(entry["path"]) for item in evidence["functions"] for entry in item["log_files"]]
+    unknown = unknown_tokens(text, known_tokens(worktree, evidence, candidates))
+    copied = copied_runs(text, logs)
+    if unknown or copied:
+        return [
+            "No issue link: the proposed issue failed the publish check.",
+            *(f"- not in the repository or run metadata: {word}" for word in unknown),
+            *(f"- copied from a log: {run}" for run in copied),
+        ]
+    link = new_issue_link(repo, issue["title"], issue["body"])
+    if len(link) > MAX_LINK_CHARS:
+        return ["No issue link: the proposed issue is too long for a link; see the full report."]
+    return [f"Create the issue: {link}"]
+
+
 def report(repo: str, evidence: dict, result: dict, *, verbose: bool = False) -> str:
     label = STATUSES[result["status"]] + (" (incomplete coverage)" if result["gaps"] else "")
     lines = [f"{'# ' if verbose else ''}{repo}: {label}", "", result["summary"]]
