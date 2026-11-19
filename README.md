@@ -4,13 +4,15 @@
 
 `workshop` is a command-line tool that has a coding agent turn a GitHub issue into a pull request. It stops when the pull request's checks pass or a person is needed, and never merges.
 
+It also inspects configured jobs and reports whether their failures need action. Inspections publish nothing and make no repairs.
+
 It is for routine changes with obvious, verifiable solutions, such as adding a field or bringing docs up to date, so people can spend their time on harder work. Inspired by [Gumloop's Software Factory](https://www.gumloop.com/engineering/software-factory).
 
 ## Vocabulary
 
 | Term | Meaning |
 |---|---|
-| Skill | One kind of work the tool handles end to end, defined by a `SKILL.md` file, such as `add-fields`. |
+| Skill | Instructions for one kind of agent work, defined by a `SKILL.md` file, such as `add-fields` or `assess-failure`. |
 | Owner | The person who queues issues, answers questions and reviews pull requests. |
 | Target repo | The repository being changed. |
 
@@ -37,6 +39,10 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
+./workshop.py inspect <owner>/<repo>
+```
+
+```bash
 ./workshop.py eval --skill add-fields
 ```
 
@@ -59,9 +65,36 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 
 `score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
 
+### inspect
+
+`inspect` checks configured jobs and reports whether action is needed. It reads `.workshop/inspect.toml` and repository context from the target repo's default branch. [Modal setup and collection details](docs/modal-inspection.md) describe the supported source.
+
+```bash
+./workshop.py inspect <owner>/<repo>
+```
+
+`--since 24h` is optional: the default is the last 24 hours. Positive durations in minutes, hours or days are accepted, up to `7d`. Modal keeps call history longer than logs, so failures older than its log retention are reported as coverage gaps; see [Limits and coverage](docs/modal-inspection.md#limits-and-coverage).
+
+Reported states determine whether failures occurred. When they did, `assess-failure` uses the logs and repository context to decide whether work remains. A later successful run alone does not establish recovery.
+
+| Result | Exit code | Meaning |
+|---|---|---|
+| OK | `0` | No failures or coverage gaps were reported. No agent was needed. |
+| OK after review | `0` | The agent found recovery with no outstanding action. |
+| Action required | `2` | The report gives the next step and how to verify it. |
+| Unable to assess | `1` | Evidence is missing or inconclusive, or the inspection could not finish. |
+
+Missing or incomplete evidence prevents an OK result. This checks observed runs; missed schedules and data freshness are outside its scope.
+
+The terminal shows the outcome, a short summary and the next step. The full report, evidence and agent log are saved under `~/.workshop/logs/<repo>-inspect/<run>/`; `--verbose` also prints the full report. Inspections make no changes to services or GitHub and do not appear in `score`.
+
+Use `--config PATH` to try a local configuration; repository context still comes from the default branch. `--agent-timeout` sets the assessment limit in seconds and defaults to `300`.
+
 ### eval
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
+
+Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
 | Option | Default | |
 |---|---|---|
@@ -85,12 +118,14 @@ uv run python -m pytest -q
 
 CI runs the tests and checks lint and formatting without changing files. The eval fixture repositories have their own configuration and are excluded from Ruff.
 
+With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pytest tests/test_inspect_permissions.py` to check actual `Read`, `Grep` and `Glob` permissions against harmless files inside and outside the allowed paths. This opt-in test uses the hosted agent and is skipped by default and when `claude` is unavailable; it is separate from the skill evals.
+
 ## Security
 
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
-- The agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host.
+- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -146,11 +181,15 @@ A job on this repository that writes a new skill. The issue cites past `other` j
 
 ### Update dependencies
 
-One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with requested versions; the other scenarios need support for existing PRs and the answer outcome.
+One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with existing Dependabot PRs: review compatibility, resolve conflicts and dependency-related failures, run the repository's required checks, and report ready to merge, blocked, or needing an owner decision. This requires support for jobs on existing PRs.
+
+Add a batch mode that works through open Dependabot PRs and returns one consolidated report. PR preparation is a separate task from `inspect`; merging remains a separate owner action. Dependency surveys need the answer outcome.
 
 ### Jobs from telemetry
 
-Investigate failures from sources such as dbt, Modal or PostHog and propose deduplicated GitHub issues with evidence and a way to verify the fix. The owner queues them for the existing issue-to-PR flow. Start with one source and one reproducible failure class; confirm the result after deployment.
+Let `inspect` create or reuse an issue when `assess-failure` identifies outstanding work. The assessment proposes the issue; Workshop publishes it with the evidence, next step, verification and an applicable repair skill. Recovered failures create no issue. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue. Reuse issues across inspections of the same unresolved problem.
+
+The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed.
 
 ### More job skills
 
@@ -173,3 +212,4 @@ Check a report, dashboard, query or specified documents against named sources an
 - Baseline: an `eval` option that runs a skill's cases with only the `workshop` skill, to show what the job skill adds.
 - Skill file checks in the tests: the name matches the directory, the frontmatter parses and every skill has an eval case.
 - Holdout fixture: a second test project that is never used while tuning skills, to show that a skill works beyond `dbt-duckdb`.
+- Changed cases only: an `eval` option that runs only the cases whose inputs differ from the default branch. Those inputs are the case file, its fixture and its skills; a change to the tool's own code, which holds the prompts and grading, selects every case. A `--case` option reruns named cases, such as one whose criterion changed or one that failed.

@@ -281,6 +281,7 @@ class Job:
     checks_s: float = 0.0  # time spent waiting for checks this run
     pushed: str = ""  # the commit the tool last pushed this run
     github: bool = True  # the read-only GitHub server; evals run without it
+    inspection: bool = False  # read supplied evidence; write only the assessment
     agent_args: list[str] = field(
         default_factory=list
     )  # more for the agent's command line, such as a spending cap
@@ -402,6 +403,17 @@ def claude_command(job: Job) -> list[str]:
         f"Edit(/{job.handoff}/**)",
         *(["mcp__github"] if job.github else []),
     ]
+    if job.inspection:
+        servers = {}
+        allowed = [
+            f"Read(/{job.worktree}/**)",
+            f"Read(/{SKILLS_DIR}/**)",
+            *(f"Read(/{path.parent}/**)" for path in job.skills),
+            f"Read(/{job.log_path.parent / 'evidence.json'})",
+            f"Read(/{job.log_path.parent / 'logs'}/**)",
+            f"Read(/{job.log_path.parent / 'history'}/**)",
+            f"Edit(/{job.handoff / 'assessment.json'})",
+        ]
     return [
         "claude",
         "-p",
@@ -423,6 +435,7 @@ def claude_command(job: Job) -> list[str]:
         "--output-format",
         "stream-json",
         "--verbose",
+        *(["--tools", "Read,Glob,Grep,Write"] if job.inspection else []),
         *job.agent_args,
     ]
 
@@ -434,9 +447,10 @@ def invoke_agent(job: Job, prompt: str) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = agent_env(job)
     deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_s)
-    prompt += (
-        f"\nThis invocation stops at {deadline:%Y-%m-%dT%H:%M:%SZ} ({timeout_s}s from now). "
-        "Allow time for the required checks, commits and handoff files before that deadline.\n"
+    prompt += f"\nThis invocation stops at {deadline:%Y-%m-%dT%H:%M:%SZ} ({timeout_s}s from now). " + (
+        "Allow time to write assessment.json before that deadline.\n"
+        if job.inspection
+        else "Allow time for the required checks, commits and handoff files before that deadline.\n"
     )
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"=== {timestamp()} prompt:\n{prompt}\n=== output:\n")
@@ -1023,6 +1037,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return workshop_eval.cmd_eval(args)
 
 
+def cmd_inspect(args: argparse.Namespace) -> int:
+    import workshop_inspect
+
+    return workshop_inspect.cmd_inspect(args)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     require_gh_login()
     for name, (color, description) in LABELS.items():
@@ -1056,13 +1076,25 @@ def main(argv: list[str] | None = None) -> int:
     score = sub.add_parser("score", help="how a target repo's jobs ended, by skill")
     score.add_argument("repo", metavar="OWNER/REPO")
     score.add_argument("--since", default="", help="only runs from this date on, e.g. 2026-10-01")
+    inspect = sub.add_parser("inspect", help="inspect configured jobs and report any action needed")
+    inspect.add_argument("repo", metavar="OWNER/REPO")
+    inspect.add_argument("--config", type=Path, metavar="PATH", help="use a local inspection config")
+    inspect.add_argument("--verbose", action="store_true", help="print the full inspection report")
+    inspect.add_argument("--since", default="24h", help="look back this long (default: 24h); e.g. 30m or 7d")
+    inspect.add_argument("--agent-timeout", type=int, default=300, help="seconds for failure assessment")
     evals = sub.add_parser("eval", help="run the agent on the eval cases and grade it; publishes nothing")
     evals.add_argument("--skill", help="only the cases for this skill")
     evals.add_argument("--runs", type=int, default=1, help="runs of each case")
     evals.add_argument("--budget", type=float, default=2.0, help="API-equivalent dollars for all the runs")
     evals.add_argument("--max-fix-attempts", type=int, default=1)
     evals.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
-    commands = {"run": cmd_run, "init": cmd_init, "score": cmd_score, "eval": cmd_eval}
+    commands = {
+        "run": cmd_run,
+        "init": cmd_init,
+        "score": cmd_score,
+        "eval": cmd_eval,
+        "inspect": cmd_inspect,
+    }
     try:
         args = parser.parse_args(argv)
         return commands[args.command](args)

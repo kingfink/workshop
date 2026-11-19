@@ -1,0 +1,43 @@
+# Call-specific logs establish that one replay recovered every earlier failed interval.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "ok-after-review"
+criterion = "conclude that no action remains because fc-replay's committed replay covered both failed intervals, cite the call-specific logs, and not treat the unlisted later runs as missing evidence"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 2
+gaps = []
+counts = {failure = 2, success = 4}
+calls = [{function_call_id = "fc-first", status = "failure", enqueued_at = "2026-01-02T01:00:00Z"}, {function_call_id = "fc-second", status = "failure", enqueued_at = "2026-01-02T02:00:00Z"}, {function_call_id = "fc-replay", status = "success", enqueued_at = "2026-01-02T03:00:00Z"}, {function_call_id = "fc-later-1", status = "success", enqueued_at = "2026-01-02T04:00:00Z"}, {function_call_id = "fc-later-2", status = "success", enqueued_at = "2026-01-02T05:00:00Z"}, {function_call_id = "fc-later-3", status = "success", enqueued_at = "2026-01-02T06:00:00Z"}]
+
+[[observations.functions.log_files]]
+scope = "call"
+call_id = "fc-first"
+text = """
+01:00 fc-first target=reporting mode=replay interval=[00:00,01:00) resuming at cursor 00:00
+01:03 fc-first TimeoutError reading source page 3; load not committed; cursor remains 00:00
+"""
+
+[[observations.functions.log_files]]
+scope = "call"
+call_id = "fc-second"
+text = """
+02:00 fc-second target=reporting mode=replay interval=[00:00,02:00) resuming at cursor 00:00
+02:04 fc-second TimeoutError reading source page 7; load not committed; cursor remains 00:00
+"""
+
+[[observations.functions.log_files]]
+scope = "call"
+call_id = "fc-replay"
+text = """
+03:00 fc-replay target=reporting mode=replay interval=[00:00,03:00) resuming at cursor 00:00
+03:06 fc-replay merged all source records by record_id; load committed; cursor advanced to 03:00
+"""

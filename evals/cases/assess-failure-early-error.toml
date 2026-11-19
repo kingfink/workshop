@@ -1,0 +1,27 @@
+# The root error precedes more than 60,000 characters of routine output.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "scheduled-build"
+expect = "action-required"
+log_noise_lines = 3000
+criterion = "identify the permission-denied error on reporting.orders from the saved log, cite the log file and line evidence, and recommend resolving database access then verifying a successful build and publication; do not claim that the root error is unavailable or recommend removing fields"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "pipeline/sync"
+failures = 1
+gaps = []
+counts = {failure = 1}
+calls = [{function_call_id = "fc-failed", status = "failure", enqueued_at = "2026-01-02T12:00:00Z"}]
+logs = """
+12:00 fc-failed dbt build started
+12:01 fc-failed Database Error: permission denied for reporting.orders
+12:02 fc-failed dbt retry failed: permission denied for reporting.orders
+12:02 fc-failed build failed; publication skipped
+"""
+

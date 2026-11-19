@@ -4,6 +4,7 @@ Only `./workshop.py eval` imports this. The test project and its grading are dbt
 """
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -25,7 +26,7 @@ from workshop import (
     git,
     handoff_text,
     initial_prompt,
-    kept_env,
+    invoke_agent,
     markdown_table,
     save_record,
     sh,
@@ -192,32 +193,39 @@ def preservation_error(before: dict, after: dict, case: dict) -> str:
     return ""
 
 
-def judge(question: str, criterion: str, cwd: Path) -> bool:
+def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> bool:
     """Ask a small model, with no tools, whether the agent's question meets the case's criterion. Its cost, about a
     cent, is left out of the totals."""
     prompt = (
-        f"An agent working on a task asked this question:\n\n<question>\n{question}\n</question>\n\n"
-        f"Does the question {criterion}? Answer with one word: yes or no."
+        f"An agent working on a task returned this {label}:\n\n<{label}>\n{question}\n</{label}>\n\n"
+        f"Does the {label} {criterion}? Answer with one word: yes or no."
     )
-    result = sh(
-        [
-            "claude",
-            "-p",
-            "--model",
-            "haiku",
-            "--tools",
-            "",
-            "--setting-sources",
-            "",
-            "--strict-mcp-config",
-            "--output-format",
-            "json",
-        ],
-        input=prompt,
-        cwd=cwd,
-        env=kept_env(),
+    job = Job(
+        "evals/judge",
+        0,
+        [],
+        "",
+        "",
+        cwd,
+        {},
+        cwd,
+        cwd / "judge-handoff",
+        cwd / "judge.log",
+        argparse.Namespace(agent_timeout=120),
+        github=False,
+        agent_args=["--model", "haiku", "--tools", ""],
     )
-    return json.loads(result.stdout).get("result", "").strip().lower().startswith("yes")
+    if invoke_agent(job, prompt):
+        return False
+    events = []
+    for line in job.log_path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            events.append(event)
+    return bool(events) and events[-1].get("result", "").strip().lower().startswith("yes")
 
 
 def issue_thread(case: dict) -> str:
@@ -333,6 +341,10 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         attempts += 1
         run(fix_prompt(job, None, ["dbt build"], log))
     shutil.rmtree(worktree / ".venv", ignore_errors=True)  # large, and not needed to review the run
+    return eval_result(job, case, passed, why, attempts)
+
+
+def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0) -> dict:
     return {
         "finished": timestamp(),
         "case": case["name"],
@@ -340,7 +352,7 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         "why": why,
         "fix_attempts": attempts,
         "skills": skill_records(job.skills),
-        "run_dir": str(run_dir),
+        "run_dir": str(job.log_path.parent),
         "seconds": {"agent": round(job.agent_s)},
         **agent_usage(job.log_path),
     }
@@ -349,6 +361,40 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
 def prepare_agent_env(worktree: Path) -> None:
     """The agent's own Python environment, in its worktree, from the packages prepare_fixture fetched."""
     sh(["uv", "sync", "--frozen", "--offline", "--quiet"], cwd=worktree)
+
+
+def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget: float) -> dict:
+    from workshop_inspect import assess, inspection_job, list_calls, save_call_history
+
+    worktree = run_dir / "worktree"
+    shutil.copytree(EVALS_DIR / "fixtures" / case["fixture"] / "repo", worktree)
+    job = inspection_job("evals/inspection", "fixture", worktree, worktree, run_dir, args)
+    job.agent_args = ["--max-budget-usd", f"{budget:.2f}"]
+    before = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
+    evidence = copy.deepcopy(case["observations"])
+    (run_dir / "logs").mkdir()
+    (run_dir / "history").mkdir()
+    for index, item in enumerate(evidence["functions"]):
+        calls = item["calls"]
+        save_call_history(item, calls, run_dir / "history" / f"{index:03}.jsonl")
+        fixtures = item.get("log_files", [{"scope": "function", "text": item.pop("logs", "")}])
+        for number, entry in enumerate(fixtures):
+            path = run_dir / "logs" / f"{index:03}-{number:03}.log"
+            logs = entry.pop("text")
+            logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
+            path.write_text(logs, encoding="utf-8")
+            entry["path"] = str(path)
+        item["log_files"] = fixtures
+        list_calls(item, calls)
+    result = assess(job, evidence)
+    after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
+    passed = result["status"] == case["expect"] and before == after
+    why = result["status"] if before == after else "changed repository files"
+    if passed:
+        passed = judge(json.dumps(result), case["criterion"], run_dir, label="assessment")
+        if not passed:
+            why = "decision matched, but the explanation or next step did not meet the criterion"
+    return eval_result(job, case, passed, why)
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -376,11 +422,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
                     }
                 )
                 continue
-            if case["fixture"] not in fixtures:
+            if case.get("kind") != "inspection" and case["fixture"] not in fixtures:
                 fixtures[case["fixture"]] = prepare_fixture(case["fixture"], home / "evals" / case["fixture"])
             status(f"{case['name']}: run {number} of {args.runs}")
-            result = eval_case(
-                case, fixtures[case["fixture"]], runs_dir / f"{case['name']}-{number}", args, share
+            run_dir = runs_dir / f"{case['name']}-{number}"
+            result = (
+                eval_inspection(case, run_dir, args, share)
+                if case.get("kind") == "inspection"
+                else eval_case(case, fixtures[case["fixture"]], run_dir, args, share)
             )
             status(f"{case['name']}: {'passed' if result['passed'] else 'failed'}: {result['why']}")
             spent += result["cost_usd"]

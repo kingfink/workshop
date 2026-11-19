@@ -1,0 +1,23 @@
+# A later completed replay covers the interrupted interval without dropping or duplicating records.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "ok-after-review"
+criterion = "conclude that no action remains because the completed replay covered the failed interval, cite that evidence, and avoid claiming an established root cause for the connection failure"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 1
+gaps = []
+counts = {failure = 1, success = 1}
+calls = [{function_call_id = "fc-failed", status = "failure", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-recovered", status = "success", enqueued_at = "2026-01-02T12:00:00Z"}]
+logs = """
+06:00 fc-failed mode=replay interval=[00:00,06:00) ConnectionError: connection reset; load not committed; cursor remains 00:00
+12:00 fc-recovered mode=replay interval=[00:00,12:00) merged all source records by record_id; load committed; cursor advanced to 12:00
+"""

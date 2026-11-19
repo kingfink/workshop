@@ -1,0 +1,30 @@
+# Detailed failure evidence should not turn the summary and next step into a diagnostic essay.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "scheduled-build"
+expect = "action-required"
+criterion = "summarize the repeated build failures and skipped publication, make clear that full error details are needed before fixing the cause and verifying successful publication, and keep summary and next_step free of unnecessary detail such as diagnostic essays, repeated counts or lists of inapplicable repair skills. Judge unnecessary detail, not word count: longer wording is fine when it carries needed information, and the separately saved evidence field may contain supporting detail"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "pipeline/sync"
+failures = 2
+gaps = ["log capture stopped at 2000000 bytes; file is incomplete"]
+counts = {success = 2, failure = 2}
+calls = [{function_call_id = "fc-midnight", status = "success", enqueued_at = "2026-01-02T00:00:00Z"}, {function_call_id = "fc-morning", status = "success", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-noon", status = "failure", enqueued_at = "2026-01-02T12:00:00Z"}, {function_call_id = "fc-evening", status = "failure", enqueued_at = "2026-01-02T18:00:00Z"}]
+logs = """
+12:00 fc-noon dbt build started
+12:01 fc-noon build summary: 100 tasks, 80 successful, 2 errors, 18 skipped
+12:02 fc-noon retry summary: 20 tasks, 2 errors, 18 skipped
+12:02 fc-noon build failed; publication skipped
+18:00 fc-evening dbt build started
+18:01 fc-evening build summary: 100 tasks, 80 successful, 2 errors, 18 skipped
+18:02 fc-evening retry summary: 20 tasks, 2 errors, 18 skipped
+18:02 fc-evening build failed; publication skipped
+Retained logs have summary counts only. Individual task errors are outside the captured excerpt.
+"""

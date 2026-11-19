@@ -1,0 +1,38 @@
+# A success from another run in broad logs cannot establish recovery for the failed work.
+kind = "inspection"
+skills = ["assess-failure"]
+fixture = "modal-inspection"
+expect = "action-required"
+criterion = "identify that the failed 00:00–06:00 interval remains unprocessed, distinguish fc-next's current-window success from fc-unrelated's archive replay in the broad logs, and recommend replaying the missed interval with verification rather than claiming recovery"
+
+[observations]
+since = "2026-01-02T00:00:00+00:00"
+until = "2026-01-03T00:00:00+00:00"
+profile = "example"
+environment = "main"
+
+[[observations.functions]]
+function = "imports/sync"
+failures = 1
+gaps = ["fc-failed: Modal returned no logs"]
+counts = {failure = 1, success = 2}
+calls = [{function_call_id = "fc-failed", status = "failure", enqueued_at = "2026-01-02T06:00:00Z"}, {function_call_id = "fc-next", status = "success", enqueued_at = "2026-01-02T12:00:00Z"}, {function_call_id = "fc-unrelated", status = "success", enqueued_at = "2026-01-02T12:01:00Z"}]
+
+[[observations.functions.log_files]]
+scope = "call"
+call_id = "fc-failed"
+text = ""
+
+[[observations.functions.log_files]]
+scope = "call"
+call_id = "fc-next"
+text = "12:00 fc-next mode=current-window interval=[06:00,12:00) load committed\n"
+
+[[observations.functions.log_files]]
+scope = "function"
+call_id = ""
+text = """
+06:00 fc-failed target=reporting mode=current-window interval=[00:00,06:00) load not committed; worker stopped
+12:01 fc-unrelated target=archive mode=replay interval=[00:00,12:00) load committed
+12:02 fc-next target=reporting publication completed for [06:00,12:00)
+"""
