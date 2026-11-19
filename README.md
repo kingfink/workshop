@@ -61,9 +61,19 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
 
+Every job's agent first decides what done is and the check that will show it, such as a test, a build or a query, and asks if there is none. The pull request gives the check and its result.
+
+| Job skill | For an issue that asks to |
+|---|---|
+| `add-fields` | Add fields that are already in loaded source tables to the models and semantic layer. |
+| `remove-fields` | Remove fields from the models and semantic layer. |
+| `add-source` | Ingest a new source or resource in an existing ingestion project. |
+| `update-docs` | Bring the docs up to date with the work finished in a time window. |
+| `other` | Make any other change that a test, build, query or command can show is done. Its pull request names the kind of work, such as `Kind: rename field`. |
+
 ### score
 
-`score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
+`score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. A job whose pull request names its kind of work gets a row per kind, such as `other: rename field`, so you can see which kinds recur and how they end. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
 
 ### inspect
 
@@ -94,7 +104,7 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 ### eval
 
-`eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
+`eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. Such a case can also require a `Kind:` line in the pull request, and a small model's judgment that the pull request does what the case says. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
 
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
@@ -161,10 +171,6 @@ A run that is killed before it can clean up, such as by a power cut, leaves the 
 
 ## Roadmap ideas
 
-### Generic job skill
-
-One `other` skill for issues that no job skill covers. It adds one rule to the `workshop` skill: before editing, state what done is and the check that will prove it, such as an existing test, a build or a query, and ask if there is none. The pull request names the kind of work, so `score` shows which kinds recur and how they end. Start with jobs that end in a pull request; questions need the answer outcome.
-
 ### Answer outcome
 
 Let a job end in a comment on the issue with no pull request, beside a question and a pull request. The agent leaves the answer in the handoff directory and the tool posts it. Reports, surveys and questions need this.
@@ -199,7 +205,7 @@ The owner queues repair issues for the existing issue-to-PR flow. Inspect again 
 
 ### More job skills
 
-Try each kind of work with the generic job skill first. Write a skill only for the kinds that fail or keep being merged after changes.
+Try each kind of work with the `other` skill first. Write a skill only for the kinds that fail or keep being merged after changes.
 
 - Fix a failing test or pipeline: reproduce the failure, repair the cause and verify the fix.
 - Add data tests: turn stated expectations into checks for uniqueness, nulls, relationships or accepted values.
