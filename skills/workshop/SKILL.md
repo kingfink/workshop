@@ -30,7 +30,7 @@ Write one question with concrete options to `question.md`, then stop.
 
 ## Done
 
-Before you edit, decide what done is and the check that will show it, such as an existing test, a build, a query or a command. The check must show that the change does what the issue asks, not only that it runs. A check your skills require counts. If the issue and the repository give you no such check, ask. Run the check before you finish.
+Before you edit, decide what done is and the check that will show it, such as an existing test, a build, a query or a command. Run the check before you edit and see it fail: a check that already passes cannot show the change is done. If you find no check that fails, such as when you cannot reproduce a problem the issue reports, ask. Run the check again before you finish.
 
 ## Working
 
@@ -50,7 +50,7 @@ A one-off decision stays in the issue thread. If the owner's answer is a standin
 
 ## Pull request
 
-Write `pull-request.md`: the title on the first line, then the body. The title states the change. The body gives a short summary, what done is with the check and its result, anything your skills ask you to report, and `Closes #<issue>`.
+Write `pull-request.md`: the title on the first line, then the body. The title states the change. The body gives a short summary, the check with its results before and after your change, anything your skills ask you to report, and `Closes #<issue>`.
 
 If you are told that checks failed, fix the cause and commit it on the same branch.
 
