@@ -534,3 +534,50 @@ def test_inspection_evals_grade_assessments_without_a_dbt_build(tmp_path, monkey
     assert workshop.main(["eval", "--skill", "assess-failure"]) == 0
     result = json.loads((tmp_path / ".workshop/logs/evals.jsonl").read_text())
     assert result["passed"] and result["fix_attempts"] == 0
+
+
+def flag(command, name):
+    return command[command.index(name) + 1]
+
+
+def test_candidate_issues_keep_trusted_authors_and_closures_in_the_window(monkeypatch):
+    queries = []
+
+    def issue(number, association, state="open", closed_at=None, **extra):
+        return {
+            "number": number,
+            "title": f"t{number}",
+            "body": None,
+            "state": state,
+            "closed_at": closed_at,
+            "author_association": association,
+            "labels": [],
+            **extra,
+        }
+
+    def api(*args):
+        queries.append(args[-1])
+        if "state=open" in args[-1]:
+            return [
+                issue(1, "OWNER"),
+                issue(2, "NONE"),
+                issue(3, "CONTRIBUTOR"),
+                issue(4, "MEMBER", pull_request={}),
+            ]
+        return [
+            issue(5, "COLLABORATOR", "closed", "2026-01-02T08:00:00Z"),
+            issue(6, "OWNER", "closed", "2026-01-01T08:00:00Z"),
+        ]
+
+    monkeypatch.setattr(inspect, "gh_json", api)
+    issues = inspect.candidate_issues("acme/analytics", SINCE)
+    assert [item["number"] for item in issues] == [1, 5]
+    assert issues[0] == {"number": 1, "title": "t1", "body": "", "state": "open", "closed_at": None}
+    assert queries[0].startswith("repos/acme/analytics/issues?state=open")
+    assert "state=closed" in queries[1] and "since=2026-01-02T00%3A00%3A00%2B00%3A00" in queries[1]
+
+
+def test_inspection_agent_may_read_candidate_issues(tmp_path):
+    inspection = job(tmp_path)
+    allowed = flag(workshop.claude_command(inspection), "--allowedTools").split(",")
+    assert f"Read(/{inspection.log_path.parent / inspect.ISSUES_FILE})" in allowed

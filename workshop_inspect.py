@@ -8,6 +8,7 @@ import selectors
 import subprocess
 import time
 import tomllib
+import urllib.parse
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
@@ -17,6 +18,7 @@ from workshop import (
     SKILLS_DIR,
     Job,
     ToolError,
+    gh_json,
     github_file,
     handoff_text,
     markdown_table,
@@ -47,6 +49,33 @@ STATUSES = {
 MAX_LOG_BYTES = 2_000_000
 MAX_LOG_FILES = 20
 MAX_CALLS = 10_000
+ISSUES_FILE = "issues.json"  # candidate issues, beside evidence.json
+TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
+
+
+def candidate_issues(repo: str, since: str) -> list[dict]:
+    """Open issues, and issues closed since `since`, written by people with push access.
+
+    The tool's equivalent of the GitHub server's lockdown mode: in a public repo, a stranger's issue cannot instruct
+    the agent.
+    """
+    start = datetime.fromisoformat(since)
+    items = gh_json("api", f"repos/{repo}/issues?state=open&per_page=100") + gh_json(
+        "api", f"repos/{repo}/issues?state=closed&since={urllib.parse.quote(since)}&per_page=100"
+    )
+    return [
+        {
+            "number": item["number"],
+            "title": item["title"],
+            "body": item["body"] or "",
+            "state": item["state"],
+            "closed_at": item["closed_at"],
+        }
+        for item in items
+        if "pull_request" not in item
+        and item["author_association"] in TRUSTED_AUTHORS
+        and (item["state"] == "open" or datetime.fromisoformat(item["closed_at"]) >= start)
+    ]
 
 
 def read_config(text: str | None) -> dict:
