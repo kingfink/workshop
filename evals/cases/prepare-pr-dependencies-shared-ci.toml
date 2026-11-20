@@ -1,0 +1,22 @@
+# A real backlog had several independent lockfile updates with the same missing CI credentials.
+kind = "preparation"
+skills = ["prepare-pr"]
+fixture = "dependency-update"
+phase = "assessment"
+expect = "blocked"
+shared = true
+criterion = "identify missing CI credentials as one shared blocker for both PRs, request restoration of the CI service credentials and rerunning the build, without treating passing lint as proof of build success or proposing weaker CI checks"
+
+[[evidence]]
+number = 1
+diff = "dependencies.lock: widget version 1 -> 2"
+feedback = []
+failed_logs = "CI_SERVICE_TOKEN is empty. Error: Token missing. Could not authenticate client."
+checks = [{name = "lint", bucket = "pass"}, {name = "integration build", bucket = "fail"}]
+
+[[evidence]]
+number = 2
+diff = "dependencies.lock: helper version 1 -> 2"
+feedback = []
+failed_logs = "CI_SERVICE_TOKEN is empty. Error: Token missing. Could not authenticate client."
+checks = [{name = "lint", bucket = "pass"}, {name = "integration build", bucket = "fail"}]

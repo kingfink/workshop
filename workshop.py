@@ -31,6 +31,7 @@ LABELS = {  # name: (color, description)
         "Waiting for the owner. The latest workshop comment says why. Comment to continue.",
     ),
 }
+PREPARE_LABEL = ("ededed", "Exclude this pull request from workshop prepare.")
 
 TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
 SMALL_MODEL = "haiku"  # chooses each job's skill, and in evals grades answers
@@ -175,11 +176,11 @@ def skill_description(path: Path) -> str:
 
 def job_skills() -> dict[str, str]:
     """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor
-    assess-failure, which only inspect uses."""
+    assess-failure and prepare-pr, which only inspect and prepare use."""
     return {
         path.parent.name: skill_description(path)
         for path in sorted(SKILLS_DIR.glob("*/SKILL.md"))
-        if path.parent.name not in ("workshop", "assess-failure")
+        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr")
     }
 
 
@@ -806,9 +807,10 @@ def pr_checks(repo: str, pr: int) -> tuple[str, list[dict]]:
     return info["headRefOid"], checks
 
 
-def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
+def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous_head: str = "") -> dict:
     """Record validation of one commit. No checks or only skipped checks do not establish a pass."""
     start = time.monotonic()
+    head_seen = False
     while True:
         observed_head, checks = pr_checks(repo, pr)
         head = head or observed_head
@@ -821,7 +823,13 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
             "checks": checks,
         }
         if observed_head != head:
+            elapsed = time.monotonic() - start
+            grace = min(2 * CHECKS_POLL_S, timeout_s)
+            if not head_seen and previous_head and observed_head == previous_head and elapsed < grace:
+                time.sleep(min(CHECKS_POLL_S, grace - elapsed))
+                continue
             return {**result, "reason": "head-changed", "observed_head_sha": observed_head, "checks": []}
+        head_seen = True
         elapsed = time.monotonic() - start
         failing = any(check["bucket"] == "fail" for check in checks)
         if checks and all(check["bucket"] != "pending" for check in checks):
@@ -837,16 +845,24 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
         time.sleep(CHECKS_POLL_S)
 
 
-def failing_logs(repo: str, failing: list[dict]) -> str:
+def failing_logs(repo: str, failing: list[dict], include_trigger: bool = False) -> str:
     """The end of each failed GitHub Actions run's log."""
     run_ids = dict.fromkeys(re.findall(r"/actions/runs/(\d+)", " ".join(check["link"] for check in failing)))
-    logs = [
-        f"--- run {run_id}\n"
-        + gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
+    logs = []
+    for run_id in run_ids:
+        title = f"--- run {run_id}"
+        if include_trigger:
+            try:
+                run = gh_json("api", f"repos/{repo}/actions/runs/{run_id}")
+                actor = (run.get("actor") or {}).get("login")
+                if actor:
+                    title += f" ({run.get('event', 'unknown event')}, actor: {actor})"
+            except ToolError:
+                pass  # The failed log may be available even if run metadata is not.
+        log = gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
             -FAILED_LOG_CHARS:
         ]
-        for run_id in run_ids
-    ]
+        logs.append(f"{title}\n{log}")
     return "\n".join(logs) or "(no GitHub Actions logs found; see the checks on the pull request)"
 
 
@@ -1062,6 +1078,8 @@ def issue_to_route(repo: str, issue: int, comments: list[dict]) -> dict:
 def cmd_run(args: argparse.Namespace) -> int:
     repo, issue = parse_run_ref(args.ref)
     names = parse_skills(args.skills) if args.skills else None
+    if names and "prepare-pr" in names:
+        raise ToolError("prepare-pr is used by prepare, not issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
     require_gh_login()
@@ -1252,7 +1270,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     require_gh_login()
-    for name, (color, description) in LABELS.items():
+    for name, (color, description) in {**LABELS, "workshop:ignore": PREPARE_LABEL}.items():
         gh(
             "label",
             "create",
@@ -1269,6 +1287,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prepare(args: argparse.Namespace) -> int:
+    import workshop_prepare
+
+    return workshop_prepare.cmd_prepare(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="workshop.py", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1281,6 +1305,16 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     run.add_argument("--checks-timeout", type=int, default=300, help="seconds to wait for checks each round")
     run.add_argument("--budget", type=float, default=10.0, help="API-equivalent dollars for this run's agent")
+    prepare = sub.add_parser("prepare", help="prepare one PR, or a repo's eligible PRs")
+    prepare.add_argument("ref", metavar="OWNER/REPO[#PR]")
+    prepare.add_argument("--include-drafts", action="store_true", help="include drafts in a batch")
+    prepare.add_argument("--max-fix-attempts", type=int, default=2)
+    prepare.add_argument("--agent-timeout", type=int, default=900)
+    prepare.add_argument("--checks-timeout", type=int, default=300)
+    prepare.add_argument("--budget", type=float, default=10.0, help="agent dollars per PR")
+    prepare.add_argument(
+        "--assessment-budget", type=float, default=5.0, help="agent dollars for batch assessment"
+    )
     init = sub.add_parser("init", help="create the workshop labels in a target repo")
     init.add_argument("repo", metavar="OWNER/REPO")
     score = sub.add_parser("score", help="how a target repo's jobs ended, by skill")
@@ -1319,6 +1353,7 @@ def main(argv: list[str] | None = None) -> int:
     evals.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     commands = {
         "run": cmd_run,
+        "prepare": cmd_prepare,
         "init": cmd_init,
         "score": cmd_score,
         "eval": cmd_eval,

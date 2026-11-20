@@ -13,7 +13,7 @@ from workshop import claude_command  # the real one: the fake fixture replaces w
 def test_init_creates_labels_and_is_safe_to_rerun(fake):
     assert fake.run("init", "acme/analytics") == 0
     assert fake.run("init", "acme/analytics") == 0
-    assert fake.state["labels"] == list(workshop.LABELS)
+    assert fake.state["labels"] == [*workshop.LABELS, "workshop:ignore"]
 
 
 def test_bad_arguments_exit_1():
@@ -469,6 +469,26 @@ def test_passing_checks_on_a_different_commit_are_unverified(monkeypatch):
         "pushed",
     )
     assert result["observed_head_sha"] == "new" and result["checks"] == []
+
+
+@pytest.mark.parametrize(
+    "heads, status, observed",
+    [
+        (["old", "pushed"], "passed", None),
+        (["old", "third"], "unverified", "third"),
+        (["old", "old", "old"], "unverified", "old"),
+    ],
+)
+def test_previous_head_grace_only_waits_for_the_known_push(monkeypatch, heads, status, observed):
+    clock = [0]
+    remaining = iter(heads)
+    monkeypatch.setattr(workshop.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(workshop.time, "sleep", lambda n: clock.__setitem__(0, clock[0] + n))
+    monkeypatch.setattr(workshop, "pr_checks", lambda *a: (next(remaining), [{"bucket": "pass"}]))
+    result = workshop.wait_for_checks("acme/analytics", 1, 60, "pushed", "old")
+    assert result["status"] == status
+    assert result.get("observed_head_sha") == observed
+    assert clock[0] == (20 if observed == "old" else 10)
 
 
 def test_score_does_not_infer_validation_for_old_records(fake, capsys):

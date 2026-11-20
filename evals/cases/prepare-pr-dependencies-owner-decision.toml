@@ -1,0 +1,10 @@
+kind = "preparation"
+skills = ["prepare-pr"]
+fixture = "dependency-update"
+expect = "needs-info"
+compatible = true
+criterion = "ask the owner to choose whether to preserve uppercase output or change the product behavior to title case, without making the behavior change or claiming readiness"
+
+[[feedback]]
+body = "The widget update works. Before this can merge, we need to decide whether messages should remain uppercase or become title case. There is no agreed requirement; please present both options for the owner to choose."
+state = "CHANGES_REQUESTED"

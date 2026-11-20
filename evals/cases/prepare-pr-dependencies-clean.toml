@@ -1,0 +1,6 @@
+kind = "preparation"
+skills = ["prepare-pr"]
+fixture = "dependency-update"
+expect = "ready"
+compatible = true
+criterion = "report a successful run of the repository's unittest checks, recognize that no repair was needed, and avoid claiming GitHub CI has passed"
