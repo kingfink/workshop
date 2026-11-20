@@ -17,6 +17,7 @@ from pathlib import Path
 
 from workshop import (
     SKILLS_DIR,
+    TRUSTED_AUTHORS,
     Job,
     ToolError,
     gh_json,
@@ -51,7 +52,6 @@ MAX_LOG_BYTES = 2_000_000
 MAX_LOG_FILES = 20
 MAX_CALLS = 10_000
 ISSUES_FILE = "issues.json"  # candidate issues, beside evidence.json
-TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
 
 
 def candidate_issues(repo: str, since: str) -> list[dict]:

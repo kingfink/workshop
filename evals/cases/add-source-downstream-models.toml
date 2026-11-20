@@ -1,5 +1,6 @@
 # The data is already loaded; changing downstream models belongs to a different job skill.
 skills = ["add-source"]
+route = "add-fields"  # the skill a run without --skills should choose
 fixture = "dbt-duckdb"
 expect = "question"
 question = "explain that the requested work changes downstream models rather than ingestion and offer to handle it with an appropriate skill or a person"

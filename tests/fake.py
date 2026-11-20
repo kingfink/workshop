@@ -43,6 +43,16 @@ def gh(state, args):
         sys.stdout.write(
             json.dumps([item for item in state.get("repo_issues", []) if item["state"] == wanted])
         )
+    elif args[0] == "api" and args[-1] == "repos/acme/analytics/issues/12":
+        print(
+            json.dumps(
+                {
+                    "title": issue.get("title", "Add new_field"),
+                    "body": issue.get("body", "Add new_field to orders."),
+                    "author_association": issue.get("author_association", "OWNER"),
+                }
+            )
+        )
     elif (
         args[0] == "api"
     ):  # api -H <accept> repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it
@@ -74,16 +84,19 @@ def gh(state, args):
     elif command == ["issue", "comment"]:
         body = sys.stdin.read() if flag(args, "--body-file") == "-" else flag(args, "--body")
         issue["comments"].append(
-            {"id": f"IC_{len(issue['comments'])}", "body": body, "viewerDidAuthor": True}
+            {
+                "id": f"IC_{len(issue['comments'])}",
+                "body": body,
+                "authorAssociation": "OWNER",
+                "viewerDidAuthor": True,
+            }
         )
-    elif command == ["issue", "list"]:  # the one issue, if it has the label
-        print(
-            json.dumps(
-                [{"number": 12, "comments": issue["comments"]}]
-                if flag(args, "--label") in issue["labels"]
-                else []
-            )
+    elif command == ["issue", "list"]:  # the one issue, if it has the label and the state
+        listed = flag(args, "--label") in issue["labels"] and flag(args, "--state") in (
+            "all",
+            issue["state"].lower(),
         )
+        print(json.dumps([{"number": 12, "comments": issue["comments"]}] if listed else []))
     elif command == ["pr", "create"]:
         number = 100 + len(state["prs"])
         state["prs"].append(
@@ -161,8 +174,22 @@ def git(state, args):
 
 
 def agent(state):
-    """Record the prompt, then commit or leave handoff files as state["agent_mode"] says."""
+    """Record the prompt, then commit or leave handoff files as state["agent_mode"] says.
+
+    Asked to choose a skill, answer with state["route"] instead.
+    """
     prompt = sys.stdin.read()
+    if "Answer with the name of one skill" in prompt:
+        state.setdefault("route_runs", []).append(prompt)
+        result = {
+            "type": "result",
+            "num_turns": 1,
+            "total_cost_usd": 0.01,
+            "result": state.get("route", "add-fields"),
+        }
+        print(json.dumps(result), flush=True)
+        save(state)
+        return state.get("route_exit", 0)
     with open(os.environ["CLAUDE_ENV_FILE"]) as f:
         env_file = f.read()
     state["agent_runs"].append(
