@@ -20,7 +20,7 @@ Preserve each PR's requested versions, existing commits and unrelated work.
 - Fix only dependency-related failures. Reproduce application failures before repairing them, then run the same check afterward. Use the repository's documented commands and run required checks even when no edit is needed.
 - Commit repairs on the current branch. Never switch branches or discard existing commits. Do not make a commit when no change is needed.
 
-Report the repairs, checks and results, and any owner action. Name checks that could not run and why. Use `ready` only when checks passed or the remaining validation can run in GitHub CI; otherwise use `blocked` or `needs-info`. The tool verifies GitHub checks and publishes commits only for `ready` results.
+Report the repairs, checks and results, and any owner action. For repairs, include the check's failing result before the change and passing result afterward. Name checks that could not run and why. Use `ready` only when checks passed or the remaining validation can run in GitHub CI; otherwise use `blocked` or `needs-info`. The tool verifies GitHub checks and publishes commits only for `ready` results.
 
 ## Boundaries
 
