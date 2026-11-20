@@ -338,26 +338,55 @@ def test_conflict_only_repair_publishes_the_merge_commit(git_job, monkeypatch):
     w.git("-C", seed, "push", "origin", "main")
     w.git("-C", task.clone, "fetch", "origin")
     w.git("-C", task.worktree, "reset", "--hard", task.pushed)
-    conflict = w.git(
-        "-C",
-        task.worktree,
-        "-c",
-        "user.name=workshop",
-        "-c",
-        "user.email=w@localhost",
-        "merge",
-        "--no-edit",
-        task.base,
-        check=False,
-    )
-    assert conflict.returncode and "CONFLICT" in conflict.stdout
-    (task.worktree / "dependency.txt").write_text("2\n")
-    repaired = pe.commit(task.worktree, "Resolve dependency conflict")
-    monkeypatch.setattr(p, "guard", lambda *a: None)
-    assert p.push(task, item, False, [])
-    assert w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip() == repaired
+
+    def agent(self, prompt):
+        assert '"merge_conflicts": true' in prompt
+        conflict = w.git(
+            "-C",
+            self.worktree,
+            "-c",
+            "user.name=workshop",
+            "-c",
+            "user.email=w@localhost",
+            "merge",
+            "--no-edit",
+            self.base,
+            check=False,
+        )
+        assert conflict.returncode and "CONFLICT" in conflict.stdout
+        (self.worktree / "dependency.txt").write_text("2\n")
+        pe.commit(self.worktree, "Resolve dependency conflict")
+        (self.handoff / "preparation.json").write_text(
+            '{"status":"ready","summary":"Resolved the conflict."}'
+        )
+        return 0
+
+    monkeypatch.setattr(p, "guard", lambda *a: {"mergeable": False})
+    monkeypatch.setattr(w.Job, "run_agent", agent)
+    monkeypatch.setattr(w, "wait_for_checks", lambda *a: {"status": "passed"})
+    assert p.prepare_one(task, item, {"feedback": []}, "Review the PR", False)["status"] == "ready"
+    repaired = w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip()
+    assert repaired == task.pushed
     parents = w.git("-C", task.clone, "show", "-s", "--format=%P", repaired).stdout.split()
     assert parents == [item["head"]["sha"], task.base]
+
+
+def test_repair_missing_base_is_blocked_without_push(git_job, monkeypatch):
+    task, item, _, remote, commit = git_job
+    w.git("-C", task.worktree, "reset", "--hard", task.pushed)
+    monkeypatch.setattr(p, "guard", lambda *a: {"mergeable": True})
+
+    def agent(self, prompt):
+        assert '"merge_conflicts": false' in prompt
+        commit(self.worktree, "dependency.txt", "Repaired\n")
+        (self.handoff / "preparation.json").write_text('{"status":"ready","summary":"Repaired."}')
+        return 0
+
+    monkeypatch.setattr(w.Job, "run_agent", agent)
+    monkeypatch.setattr(w, "wait_for_checks", lambda *a: pytest.fail("cannot poll before publishing"))
+    result = p.prepare_one(task, item, {"feedback": []}, "Review the PR", False)
+    assert result["status"] == "blocked" and f"merge base `{task.base}`" in result["reason"]
+    assert w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip() == task.pushed
 
 
 def test_fresh_checkout_recovers_from_a_detached_worktree(git_job):
@@ -405,11 +434,12 @@ def test_push_refuses_rewritten_or_uncommitted_work(git_job, monkeypatch):
 )
 def test_ready_requires_observed_ci(tmp_path, monkeypatch, validation, expected):
     task = job(tmp_path)
-    monkeypatch.setattr(p, "guard", lambda *a: None)
+    monkeypatch.setattr(p, "guard", lambda *a: {"mergeable": None})
     monkeypatch.setattr(p, "push", lambda *a: False)
     monkeypatch.setattr(w, "wait_for_checks", lambda *a: validation)
 
     def agent(self, prompt):
+        assert '"merge_conflicts": null' in prompt
         (self.handoff / "preparation.json").write_text('{"status":"ready","summary":"Tests passed."}')
         return 0
 
@@ -419,7 +449,7 @@ def test_ready_requires_observed_ci(tmp_path, monkeypatch, validation, expected)
 
 def test_blocked_agent_does_not_push(tmp_path, monkeypatch):
     task = job(tmp_path)
-    monkeypatch.setattr(p, "guard", lambda *a: None)
+    monkeypatch.setattr(p, "guard", lambda *a: {})
     monkeypatch.setattr(p, "push", lambda *a: pytest.fail("must not push"))
 
     def agent(self, prompt):
@@ -497,7 +527,7 @@ def test_no_eligible_prs_does_not_invoke_agent(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("second_status", ["blocked", "ready"])
 def test_fix_loop_stops_on_an_external_blocker_or_no_commit(tmp_path, monkeypatch, second_status):
     task = job(tmp_path)
-    monkeypatch.setattr(p, "guard", lambda *a: None)
+    monkeypatch.setattr(p, "guard", lambda *a: {})
     pushes, prompts = [], []
 
     def push(*a):

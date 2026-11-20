@@ -27,7 +27,7 @@ When the PR changes dependency declarations or lockfiles:
 
 - Check compatibility against the repository's use of the changed dependencies; a version number alone is not evidence of a blocker.
 - Preserve requested versions and base constraints. Regenerate lockfiles with the repository's package manager or documented resolver; never hand-edit generated entries. Ask if the constraints cannot be satisfied together or a requested version must change.
-- A Dependabot-triggered workflow uses Dependabot secrets in place of Actions secrets. If the run actor and credential configuration explain a missing secret, ask the owner to configure the needed Dependabot secret and verify a Dependabot-triggered run. An empty variable alone does not identify the cause. Never commit just to trigger CI under another actor.
+- A Dependabot-triggered workflow uses Dependabot secrets in place of Actions secrets. If the failed run's actor is Dependabot and trusted feedback or repository docs show the missing credential is available only as an Actions secret, ask the owner to configure a Dependabot secret and verify a Dependabot-triggered run. An empty variable alone does not identify the cause. Never commit just to trigger CI under another actor.
 
 ## Boundaries
 
