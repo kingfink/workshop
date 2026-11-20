@@ -13,6 +13,8 @@ Preserve each PR's intent, existing commits and unrelated work. Establish the in
 - `needs-info`: unclear intent, a product decision, dropping platform support or feedback that changes the PR's scope. Give the owner concrete options.
 - `prepare`: review or repair within the PR's intent can proceed. Defer questions about changed code that require the PR checkout to the repair phase.
 
+If the supplied evidence shows a failed run predates a fix on the PR's base branch, ask the owner to update the PR branch with that fix and start fresh CI on the updated code. Re-running a GitHub Actions run uses its original commit and ref; it does not validate newer code.
+
 ## Prepare one PR
 
 - Check the diff against the request and trusted review feedback. Verify the promised behavior, not only whether CI passes. Report required evidence you cannot access with the allowed tools.

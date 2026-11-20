@@ -1,6 +1,7 @@
 """Offline preparation evals. Grade committed files without executing agent-authored code outside its sandbox."""
 
 import ast
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -85,7 +86,15 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
     before = w.git("-C", clone, "rev-parse", EVAL_BRANCH).stdout.strip()
     try:
         if job.inspection:
-            evidence = case["evidence"]
+            evidence = copy.deepcopy(case["evidence"])
+            (run_dir / "logs").mkdir()
+            for item in evidence:
+                if logs := item.get("failed_logs"):
+                    path = run_dir / "logs" / f"{item['number']}.log"
+                    logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
+                    logs += case.get("log_tail", "")
+                    path.write_text(logs, encoding="utf-8")
+                    item["failed_logs"] = f"Full failed-job log: {path}"
             result = p.assess(job, evidence)
             passed = all(result[item["number"]]["status"] == case["expect"] for item in evidence)
             if case.get("shared"):

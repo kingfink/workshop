@@ -153,18 +153,103 @@ def test_only_trusted_feedback_reaches_the_agent(monkeypatch):
 
 
 @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "NONE"])
-def test_request_only_includes_trusted_authors(monkeypatch, association):
+def test_request_only_includes_trusted_authors(tmp_path, monkeypatch, association):
     item = pr(author_association=association, title="Add a feature", body="Keep existing behavior")
     if association == "NONE":
         item["user"] = {"login": "dependabot[bot]", "type": "Bot"}
     monkeypatch.setattr(p, "feedback", lambda *a: [])
     monkeypatch.setattr(w, "pr_checks", lambda *a: (item["head"]["sha"], []))
     monkeypatch.setattr(w, "gh", lambda *a: argparse.Namespace(stdout="patch"))
-    evidence = p.collect(REPO, item)
+    evidence = p.collect(REPO, item, tmp_path / "logs")
     expected = {"title": item["title"], "body": item["body"]} if association in w.TRUSTED_AUTHORS else {}
     assert evidence["request"] == expected
     assert evidence["diff"] == "patch"
     assert evidence["dependabot"] == (association == "NONE")
+
+
+def test_collect_saves_complete_failed_job_logs(tmp_path, monkeypatch):
+    task = job(tmp_path)
+    item = pr(title="Update widget", body="Update the dependency")
+    checks = [
+        {"bucket": "fail", "link": f"https://github.com/{REPO}/actions/runs/27/job/{number}"}
+        for number in (31, 32)
+    ]
+    root_error = "FAIL accepted_values_channel_type\n"
+    full_log = root_error + "routine progress\n" * 1000 + "RuntimeError: command failed\n"
+    assert root_error not in full_log[-w.FAILED_LOG_CHARS :]
+    monkeypatch.setattr(p, "feedback", lambda *a: [])
+    monkeypatch.setattr(w, "pr_checks", lambda *a: (item["head"]["sha"], checks))
+    fetches = []
+
+    def gh_json(*args):
+        if args[-1].endswith("/jobs"):
+            return [
+                {"jobs": [{"id": 30, "name": "lint", "conclusion": "success"}]},
+                {"jobs": [{"id": n, "name": "build", "conclusion": "failure"} for n in (31, 32)]},
+            ]
+        return {"event": "pull_request", "actor": {"login": "dependabot[bot]"}}
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("pr", "diff"):
+            return argparse.Namespace(stdout="patch")
+        assert "--log" in args and "--log-failed" not in args
+        fetches.append(args[args.index("--job") + 1])
+        return argparse.Namespace(stdout=full_log, returncode=0)
+
+    monkeypatch.setattr(w, "gh_json", gh_json)
+    monkeypatch.setattr(w, "gh", gh)
+    log_dir = tmp_path / "logs"
+    evidence = p.collect(REPO, item, log_dir)
+    assert fetches == [31, 32]  # two checks on one run do not fetch its jobs twice
+    assert "pull_request, actor: dependabot[bot]" in evidence["failed_logs"]
+    assert root_error not in evidence["failed_logs"]  # evidence holds paths, not inline logs
+    for number in (31, 32):
+        path = log_dir / f"27-{number}.log"
+        assert str(path.resolve()) in evidence["failed_logs"]
+        assert path.read_text() == full_log
+
+    task.inspection = True
+    command = w.claude_command(task)
+    allowed = command[command.index("--allowedTools") + 1].split(",")
+    assert f"Read(/{log_dir}/**)" in allowed and "Bash" not in allowed
+    task.inspection = False
+    task.log_path = tmp_path / "12" / "agent.log"
+    task.evidence_dir = log_dir
+    command = w.claude_command(task)
+    assert f"Read(/{log_dir}/**)" in command[command.index("--allowedTools") + 1].split(",")
+
+
+@pytest.mark.parametrize("failure", ["metadata", "jobs", "download", "empty", "no-failed-jobs"])
+def test_failed_job_logs_report_unavailable_evidence(tmp_path, monkeypatch, failure):
+    def gh_json(*args):
+        if args[-1].endswith("/jobs"):
+            if failure == "jobs":
+                raise w.ToolError("not found")
+            return [
+                {
+                    "jobs": []
+                    if failure == "no-failed-jobs"
+                    else [{"id": 31, "name": "build", "conclusion": "failure"}]
+                }
+            ]
+        raise w.ToolError("metadata unavailable")
+
+    monkeypatch.setattr(w, "gh_json", gh_json)
+    monkeypatch.setattr(
+        w,
+        "gh",
+        lambda *a, **kw: argparse.Namespace(
+            stdout="" if failure == "empty" else "log output\n", returncode=int(failure == "download")
+        ),
+    )
+    result = w.failing_logs(REPO, [{"link": f"https://github.com/{REPO}/actions/runs/27"}], True, tmp_path)
+    if failure == "metadata":
+        assert (tmp_path / "27-31.log").read_text() == "log output\n"
+        assert "Full failed-job log:" in result
+    else:
+        assert "unavailable" in result or "no failed-job logs available" in result
+        assert "Full failed-job log:" not in result
+        assert not list(tmp_path.glob("*.log"))
 
 
 def test_push_can_move_a_comment_and_dismiss_an_approval(monkeypatch):
@@ -485,7 +570,7 @@ def test_batch_assesses_before_repairs_and_continues_after_failure(tmp_path, mon
     monkeypatch.setattr(
         p,
         "collect",
-        lambda r, item: (
+        lambda r, item, log_dir: (
             events.append(f"collect {item['number']}")
             or {
                 "number": item["number"],

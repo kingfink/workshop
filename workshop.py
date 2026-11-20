@@ -317,6 +317,7 @@ class Job:
     agent_args: list[str] = field(
         default_factory=list
     )  # more for the agent's command line, such as a spending cap
+    evidence_dir: Path | None = None  # additional read-only logs supplied by the tool
     budget: float = 0.0  # API-equivalent dollars for all of this run's agent invocations; 0 for no cap
     validation: dict = field(
         default_factory=lambda: {
@@ -432,6 +433,7 @@ def claude_command(job: Job) -> list[str]:
     allowed = [
         "Bash",
         *(f"Read(/{path.parent}/**)" for path in job.skills),
+        *([f"Read(/{job.evidence_dir}/**)"] if job.evidence_dir else []),
         f"Edit(/{job.worktree}/**)",
         f"Edit(/{job.handoff}/**)",
         *(["mcp__github"] if job.github else []),
@@ -845,8 +847,10 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous
         time.sleep(CHECKS_POLL_S)
 
 
-def failing_logs(repo: str, failing: list[dict], include_trigger: bool = False) -> str:
-    """The end of each failed GitHub Actions run's log."""
+def failing_logs(
+    repo: str, failing: list[dict], include_trigger: bool = False, log_dir: Path | None = None
+) -> str:
+    """Save complete failed-job logs when a directory is supplied; otherwise return failed-step tails."""
     run_ids = dict.fromkeys(re.findall(r"/actions/runs/(\d+)", " ".join(check["link"] for check in failing)))
     logs = []
     for run_id in run_ids:
@@ -859,6 +863,32 @@ def failing_logs(repo: str, failing: list[dict], include_trigger: bool = False) 
                     title += f" ({run.get('event', 'unknown event')}, actor: {actor})"
             except ToolError:
                 pass  # The failed log may be available even if run metadata is not.
+        if log_dir is not None:
+            try:
+                pages = gh_json("api", "--paginate", "--slurp", f"repos/{repo}/actions/runs/{run_id}/jobs")
+                jobs = [job for page in pages for job in page["jobs"]]
+            except ToolError:
+                logs.append(f"{title}\n(failed-job list unavailable)")
+                continue
+            failed = [
+                job
+                for job in jobs
+                if job.get("conclusion")
+                in ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
+            ]
+            if not failed:
+                logs.append(f"{title}\n(no failed-job logs available)")
+            for job in failed:
+                log = gh("run", "view", run_id, "--repo", repo, "--job", job["id"], "--log", check=False)
+                label = f"{title}, job {job['id']} ({job['name']})"
+                if log.returncode or not log.stdout.strip():
+                    logs.append(f"{label}\n(failed-job log unavailable)")
+                    continue
+                log_dir.mkdir(parents=True, exist_ok=True)
+                path = (log_dir / f"{run_id}-{job['id']}.log").resolve()
+                path.write_text(log.stdout, encoding="utf-8")
+                logs.append(f"{label}\nFull failed-job log: {path}")
+            continue
         log = gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
             -FAILED_LOG_CHARS:
         ]
