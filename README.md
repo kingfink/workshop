@@ -2,11 +2,9 @@
 
 > This project is experimental.
 
-`workshop` is a command-line tool that has a coding agent turn a GitHub issue into a pull request. It stops when the pull request's checks pass or a person is needed, and never merges.
+`workshop` is a command-line tool that uses a coding agent to turn GitHub issues into pull requests and prepare existing Dependabot PRs for review. It stops when checks pass or a person is needed, and never merges.
 
 It also inspects configured jobs and reports whether their failures need action. Inspections publish nothing and make no repairs.
-
-`prepare` reviews existing Dependabot pull requests, repairs dependency-related problems, and reports which are ready for review. It never merges.
 
 It is for routine changes with obvious, verifiable solutions, such as adding a field or bringing docs up to date, so people can spend their time on harder work. Inspired by [Gumloop's Software Factory](https://www.gumloop.com/engineering/software-factory).
 
@@ -86,13 +84,13 @@ Before editing, every job's agent decides what done is and finds a check that sh
 
 ### prepare
 
-`prepare <owner>/<repo>` works the repository's open Dependabot PRs, oldest first. It excludes drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. The `workshop:ignore` label excludes a PR even when it is explicitly selected. Only PRs with a branch in the target repository are supported. PRs do not need a queue label.
+`prepare <owner>/<repo>` reviews open Dependabot PRs whose branches are in the target repo. It skips drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. `workshop:ignore` always excludes a PR. No queue label is needed.
 
-The tool collects each PR's diff, checks, failed logs and feedback from people with push access. It assesses the batch before making repairs and groups shared blockers, such as missing CI credentials, once in the terminal report. Dependabot descriptions and comments are not passed to the agent; it reviews the dependency changes in the diff. The `update-dependencies` skill is used by `prepare`, separately from issue skill selection. A target repository can replace it with `.workshop/skills/update-dependencies/SKILL.md` on its default branch.
+The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. For each PR that can proceed, it reviews compatibility, merges the base, repairs dependency-related problems and runs checks. It preserves existing commits, titles, descriptions and draft status.
 
-For each PR that can proceed, the agent reviews compatibility, merges its base branch, resolves conflicts with the repository's package manager, and runs the required checks. The tool pushes commits to the existing PR branch and follows its GitHub checks, allowing dependency-related fix attempts. PR titles, descriptions and draft status are preserved. Decisions that change the PR's intent go to the owner.
+The [`update-dependencies` skill](skills/update-dependencies/SKILL.md) handles preparation. A target repo can replace it with `.workshop/skills/update-dependencies/SKILL.md` on its default branch.
 
-Before pushing or publishing a result, the tool checks the PR's head, base, eligibility and trusted feedback again. A change stops preparation of that PR; rerun to assess the new revision. Pushes preserve the existing commits and use an exact lease to refuse concurrent branch updates. A local process lock prevents overlapping `prepare` runs for the same repository on one machine. Separate clones under `~/.workshop/repos/prepare/` keep preparation apart from issue work.
+If the PR's commits, base, eligibility, title, description or trusted feedback change outside this run, preparation stops for that PR. Rerun to reassess it. Pushes refuse concurrent branch changes; only one `prepare` run per repo can run on a machine.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -103,11 +101,13 @@ Before pushing or publishing a result, the tool checks the PR's head, base, elig
 | `--agent-timeout` | `900` | Seconds per agent invocation. |
 | `--checks-timeout` | `300` | Seconds to wait for checks in each round. |
 
-Budget accounting has the same limits as `run`: a turn can go slightly over the cap, and timed-out invocations report no cost. A batch's allowance is the assessment budget plus the per-PR budget for each selected PR.
+The batch allowance is the assessment budget plus a per-PR budget for each selected PR. Accounting has the same limits as [`run`](#run).
 
-The report lists `ready`, `blocked`, `needs-info` or `error` for every selected PR. `ready` means the agent completed its review and the reported GitHub checks passed at the recorded head and base; it does not establish that every intended check ran. No checks, only skipped checks or an unfinished wait leave a PR blocked. Local test claims are separate from the tool's GitHub validation. Exit codes are `0` when every selected PR is ready (or none qualify), `2` when an owner action or decision remains, and `1` on errors. Individual failures do not stop the rest of the batch.
+Each PR gets a result: `ready`, `blocked`, `needs-info` or `error`. `ready` requires a completed agent review and passing GitHub checks at the recorded commits; it does not prove every intended check ran. No checks, only skipped checks or an unfinished wait leave the PR blocked.
 
-Each completed assessment or preparation updates the tool's own result comment on the PR. Reruns assess the current commits and feedback afresh, reuse the existing branch, and update that comment. They do not rely on local state from the previous run. The full batch report and agent logs stay under `~/.workshop/logs/`. These results are separate from the issue-run records shown by `score`.
+Individual failures do not stop the batch. The command exits `1` if any PR errors, `2` if any remains blocked or needs a decision, and `0` otherwise, including when none qualify.
+
+Results update the tool's own comment on each PR. Reruns reassess the current commits and feedback. The full report and agent logs stay under `~/.workshop/logs/`; `score` covers issue runs only.
 
 ### score
 
@@ -152,7 +152,7 @@ Preparation cases use a local dependency fixture with a documented resolver and 
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
 | `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
-| `--changed` | off | Only the cases whose inputs differ from where this branch left the default branch, `origin/HEAD`, counting uncommitted and new files. A case's inputs are its case file, its fixture and the `SKILL.md` of each skill it uses, the `workshop` skill included except in inspection cases. A change to `workshop.py`, `workshop_eval.py` or `workshop_inspect.py`, which hold the prompts and grading, selects every case. |
+| `--changed` | off | Only cases whose inputs differ from the branch point with `origin/HEAD`, including uncommitted and new files. Inputs are the case, fixture and skills; issue cases also use `workshop`. A change to any `workshop*.py` module selects every case. |
 | `--route` | off | Only choose each case's skill from its issue, as `run` does without `--skills`, and check that it is the case's skill, or the one its `route` names. No agent works the case, and no record is saved. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
@@ -181,6 +181,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
+- For `prepare`, the tool supplies diffs, checks, failed logs and feedback from people with push access. The agent has no GitHub tools and receives no Dependabot descriptions or comments.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
