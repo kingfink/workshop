@@ -176,11 +176,11 @@ def skill_description(path: Path) -> str:
 
 def job_skills() -> dict[str, str]:
     """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor
-    assess-failure and update-dependencies, which only inspect and prepare use."""
+    assess-failure and prepare-pr, which only inspect and prepare use."""
     return {
         path.parent.name: skill_description(path)
         for path in sorted(SKILLS_DIR.glob("*/SKILL.md"))
-        if path.parent.name not in ("workshop", "assess-failure", "update-dependencies")
+        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr")
     }
 
 
@@ -1063,8 +1063,8 @@ def issue_to_route(repo: str, issue: int, comments: list[dict]) -> dict:
 def cmd_run(args: argparse.Namespace) -> int:
     repo, issue = parse_run_ref(args.ref)
     names = parse_skills(args.skills) if args.skills else None
-    if names and "update-dependencies" in names:
-        raise ToolError("update-dependencies is used by prepare, not issue runs")
+    if names and "prepare-pr" in names:
+        raise ToolError("prepare-pr is used by prepare, not issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
     require_gh_login()
@@ -1290,7 +1290,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     run.add_argument("--checks-timeout", type=int, default=300, help="seconds to wait for checks each round")
     run.add_argument("--budget", type=float, default=10.0, help="API-equivalent dollars for this run's agent")
-    prepare = sub.add_parser("prepare", help="prepare one Dependabot PR, or a repo's eligible Dependabot PRs")
+    prepare = sub.add_parser("prepare", help="prepare one PR, or a repo's eligible PRs")
     prepare.add_argument("ref", metavar="OWNER/REPO[#PR]")
     prepare.add_argument("--include-drafts", action="store_true", help="include drafts in a batch")
     prepare.add_argument("--max-fix-attempts", type=int, default=2)

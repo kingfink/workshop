@@ -34,13 +34,27 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
     w.git("init", "--quiet", "--initial-branch", "main", clone)
     base = commit(clone, "Base")
     w.git("-C", clone, "worktree", "add", "--quiet", "-b", EVAL_BRANCH, worktree)
-    app_v2 = (clone / "app.py").read_text().replace("uppercase=True", "upper=True")
+    dependency = case["fixture"] == "dependency-update"
+    expected_app = (
+        (clone / "app.py").read_text().replace("uppercase=True", "upper=True")
+        if dependency
+        else "def total(values, fee=0):\n    return sum(values) + fee\n"
+    )
     if case.get("phase") != "assessment":
-        (worktree / "dependencies.json").write_text('{"widget": 2, "helper": 1}\n')
-        (worktree / "dependencies.lock").write_text('{"helper": 1, "widget": 2}\n')
+        if dependency:
+            (worktree / "dependencies.json").write_text('{"widget": 2, "helper": 1}\n')
+            (worktree / "dependencies.lock").write_text('{"helper": 1, "widget": 2}\n')
+        else:
+            (worktree / "app.py").write_text(expected_app.replace("+ fee", "- fee"))
+            (worktree / "tests" / "test_fee.py").write_text(
+                "import unittest\nfrom app import total\n\n"
+                "class FeeTest(unittest.TestCase):\n"
+                "    def test_fee_is_added(self):\n"
+                "        self.assertEqual(total([2, 3], fee=4), 9)\n"
+            )
         if case.get("compatible"):
-            (worktree / "app.py").write_text(app_v2)
-        head = commit(worktree, "Update widget")
+            (worktree / "app.py").write_text(expected_app)
+        head = commit(worktree, "Update widget" if dependency else "Add optional fee")
         if case.get("conflict"):
             (clone / "dependencies.json").write_text('{"widget": 1, "helper": 2}\n')
             (clone / "dependencies.lock").write_text('{"helper": 2, "widget": 1}\n')
@@ -48,7 +62,7 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
     else:
         head = base
     job = w.Job(
-        "evals/dependencies",
+        "evals/preparation",
         1,
         [w.SKILLS_DIR / p.SKILL / "SKILL.md"],
         EVAL_BRANCH,
@@ -76,13 +90,12 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
         else:
             evidence = {
                 "number": 1,
+                "request": case.get("request", {}),
                 "feedback": case.get("feedback", []),
                 "checks": [],
                 "diff": w.git("-C", clone, "diff", f"main...{EVAL_BRANCH}").stdout,
             }
-            code = job.run_agent(
-                p.repair_prompt(job, evidence, "Review this dependency update and prepare it.")
-            )
+            code = job.run_agent(p.repair_prompt(job, evidence, "Review this PR and prepare it."))
             result = p.preparation(job)
             passed = code == 0 and result["status"] == case["expect"]
         why = "decision matched" if passed else "wrong decision"
@@ -93,9 +106,11 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
             if current != before or dirty:
                 passed, why = False, "changed files before reporting the blocker or decision"
         else:
-            permitted = {"app.py", "dependencies.json", "dependencies.lock"}
+            permitted = {"app.py"}
+            if dependency:
+                permitted.update(("dependencies.json", "dependencies.lock"))
             if dirty or set(changed) - permitted:
-                passed, why = False, "uncommitted changes or changes outside dependency preparation"
+                passed, why = False, "uncommitted changes or changes outside the PR's scope"
             for ancestor in (head, base):
                 if w.git(
                     "-C", clone, "merge-base", "--is-ancestor", ancestor, current, check=False
@@ -105,14 +120,15 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
             def blob(name):
                 return w.git("-C", clone, "show", f"{current}:{name}").stdout
 
-            versions = {"widget": 2, "helper": 2 if case.get("conflict") else 1}
-            if (
-                json.loads(blob("dependencies.json")) != versions
-                or json.loads(blob("dependencies.lock")) != versions
-            ):
-                passed, why = False, "lost requested updates or produced an inconsistent lockfile"
-            if ast.dump(ast.parse(blob("app.py"))) != ast.dump(ast.parse(app_v2)):
-                passed, why = False, "did not preserve application behavior with the updated dependency"
+            if dependency:
+                versions = {"widget": 2, "helper": 2 if case.get("conflict") else 1}
+                if (
+                    json.loads(blob("dependencies.json")) != versions
+                    or json.loads(blob("dependencies.lock")) != versions
+                ):
+                    passed, why = False, "lost requested updates or produced an inconsistent lockfile"
+            if ast.dump(ast.parse(blob("app.py"))) != ast.dump(ast.parse(expected_app)):
+                passed, why = False, "did not implement the expected application behavior"
             if case.get("compatible") and not case.get("conflict") and changed:
                 passed, why = False, "changed an already compatible PR"
         if passed and not judge(json.dumps(result), case["criterion"], run_dir, "preparation report"):

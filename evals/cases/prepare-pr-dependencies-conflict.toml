@@ -1,5 +1,5 @@
 kind = "preparation"
-skills = ["update-dependencies"]
+skills = ["prepare-pr"]
 fixture = "dependency-update"
 expect = "ready"
 compatible = true

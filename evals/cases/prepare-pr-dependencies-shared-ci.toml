@@ -1,6 +1,6 @@
 # A real backlog had several independent lockfile updates with the same missing CI credentials.
 kind = "preparation"
-skills = ["update-dependencies"]
+skills = ["prepare-pr"]
 fixture = "dependency-update"
 phase = "assessment"
 expect = "blocked"

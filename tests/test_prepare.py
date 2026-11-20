@@ -7,6 +7,8 @@ import pytest
 
 import workshop as w
 import workshop_prepare as p
+import workshop_prepare_eval as pe
+from workshop_eval import load_cases
 
 REPO = "acme/analytics"
 
@@ -17,7 +19,7 @@ def pr(number=12, **values):
         "state": "open",
         "draft": False,
         "labels": [],
-        "user": {"login": "dependabot[bot]", "id": p.DEPENDABOT_ID},
+        "user": {"login": "dependabot[bot]"},
         "head": {"ref": "dependabot/uv/widget-2", "sha": "a" * 40, "repo": {"full_name": REPO}},
         "base": {"ref": "main", "sha": "b" * 40},
         **values,
@@ -74,8 +76,8 @@ def test_batch_selection_and_explicit_drafts(monkeypatch):
         pr(1),
     ]
     monkeypatch.setattr(p, "pages", lambda _: candidates)
-    assert [item["number"] for item in p.select_prs(REPO, None, False)] == [1, 3]
-    assert [item["number"] for item in p.select_prs(REPO, None, True)] == [1, 2, 3]
+    assert [item["number"] for item in p.select_prs(REPO, None, False)] == [1, 3, 5]
+    assert [item["number"] for item in p.select_prs(REPO, None, True)] == [1, 2, 3, 5]
     monkeypatch.setattr(p, "read_pr", lambda *_: candidates[1])
     assert p.select_prs(REPO, 2, False) == [candidates[1]]
     monkeypatch.setattr(p, "read_pr", lambda *_: candidates[2])
@@ -87,7 +89,6 @@ def test_batch_selection_and_explicit_drafts(monkeypatch):
     "change, reason",
     [
         ({"state": "closed"}, "not open"),
-        ({"user": {"login": "dependabot[bot]", "id": 7}}, "only Dependabot"),
         ({"head": {"repo": {"full_name": "someone/fork"}}}, "target repository"),
         ({"head": {"repo": None}}, "target repository"),
     ],
@@ -114,6 +115,18 @@ def test_only_trusted_feedback_reaches_the_agent(monkeypatch):
     result = p.feedback(REPO, 12)
     assert len(result) == 3
     assert all(item["body"] == "requested change" for item in result)
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"])
+def test_request_only_includes_trusted_authors(monkeypatch, association):
+    item = pr(author_association=association, title="Add a feature", body="Keep existing behavior")
+    monkeypatch.setattr(p, "feedback", lambda *a: [])
+    monkeypatch.setattr(w, "pr_checks", lambda *a: (item["head"]["sha"], []))
+    monkeypatch.setattr(w, "gh", lambda *a: argparse.Namespace(stdout="patch"))
+    evidence = p.collect(REPO, item)
+    expected = {"title": item["title"], "body": item["body"]} if association in w.TRUSTED_AUTHORS else {}
+    assert evidence["request"] == expected
+    assert evidence["diff"] == "patch"
 
 
 @pytest.mark.parametrize("field", ["head", "base", "feedback", "draft", "ignore", "closed", "body"])
@@ -323,7 +336,7 @@ def test_report_updates_only_our_comment(monkeypatch):
 
 def test_batch_assesses_before_repairs_and_continues_after_failure(tmp_path, monkeypatch, capsys):
     events = []
-    candidates = [pr(12), pr(13)]
+    candidates = [pr(12), pr(13, user={"login": "owner"})]
     monkeypatch.setattr(w, "prepare_worktree", lambda *a: "base")
     monkeypatch.setattr(w, "copy_repo_skills", lambda *a: None)
     monkeypatch.setattr(w, "repo_settings", lambda *a: {})
@@ -418,6 +431,26 @@ def test_same_repository_cannot_run_twice(tmp_path, monkeypatch):
 
 
 def test_prepare_skill_is_not_an_issue_skill(fake):
-    assert "update-dependencies" not in w.job_skills()
-    assert fake.run("run", "acme/analytics#12", "--skills", "update-dependencies") == 1
+    assert "prepare-pr" not in w.job_skills()
+    assert fake.run("run", "acme/analytics#12", "--skills", "prepare-pr") == 1
     assert not fake.calls("gh")
+
+
+@pytest.mark.parametrize("change", ["repair", "none", "weaken-tests", "uncommitted"])
+def test_feature_eval_checks_committed_behavior_and_preserves_tests(tmp_path, monkeypatch, change):
+    case = next(case for case in load_cases("prepare-pr") if case["name"] == "prepare-pr-feature-repair")
+    monkeypatch.setattr(pe, "judge", lambda *a: True)
+
+    def agent(task, prompt):
+        if change != "none":
+            (task.worktree / "app.py").write_text("def total(values, fee=0):\n    return sum(values) + fee\n")
+        if change == "weaken-tests":
+            (task.worktree / "tests" / "test_fee.py").write_text("")
+        if change in ("repair", "weaken-tests"):
+            pe.commit(task.worktree, "Repair")
+        (task.handoff / "preparation.json").write_text('{"status":"ready","summary":"Verified"}')
+        return 0
+
+    monkeypatch.setattr(w, "invoke_agent", agent)
+    result = pe.eval_preparation(case, tmp_path, args(), 1)
+    assert result["passed"] == (change == "repair")

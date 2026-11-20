@@ -1,0 +1,14 @@
+kind = "preparation"
+skills = ["prepare-pr"]
+fixture = "pr-change"
+expect = "needs-info"
+compatible = true
+criterion = "ask the owner to choose whether the fee remains optional or becomes mandatory, without changing the behavior or claiming readiness"
+
+[request]
+title = "Add an optional fee to totals"
+body = "Add a fee argument, defaulting to zero, and include it in the total. Existing callers that omit fee must keep the same behavior."
+
+[[feedback]]
+body = "The optional fee works. Before this can merge, we need to decide whether callers must always supply a fee instead. There is no agreed requirement; present both options for the owner to choose."
+state = "CHANGES_REQUESTED"

@@ -18,7 +18,7 @@ def test_eval_cases_are_valid():
             assert case["observations"]["functions"] and case["criterion"]
         elif case.get("kind") == "preparation":
             assert case["expect"] in ("ready", "blocked", "needs-info")
-            assert case["skills"] == ["update-dependencies"] and case["criterion"]
+            assert case["skills"] == ["prepare-pr"] and case["criterion"]
             if case.get("phase") == "assessment":
                 assert case["evidence"]
         else:

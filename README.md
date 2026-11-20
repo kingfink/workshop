@@ -2,7 +2,7 @@
 
 > This project is experimental.
 
-`workshop` is a command-line tool that uses a coding agent to turn GitHub issues into pull requests and prepare existing Dependabot PRs for review. It stops when checks pass or a person is needed, and never merges.
+`workshop` is a command-line tool that uses a coding agent to turn GitHub issues into pull requests and prepare existing PRs for review. It stops when checks pass or a person is needed, and never merges.
 
 It also inspects configured jobs and reports whether their failures need action. Inspections publish nothing and make no repairs.
 
@@ -84,11 +84,11 @@ Before editing, every job's agent decides what done is and finds a check that sh
 
 ### prepare
 
-`prepare <owner>/<repo>` reviews open Dependabot PRs whose branches are in the target repo. It skips drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. `workshop:ignore` always excludes a PR. No queue label is needed.
+`prepare <owner>/<repo>` reviews open PRs whose branches are in the target repo, regardless of author. It skips drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. `workshop:ignore` always excludes a PR. No queue label is needed.
 
-The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. For each PR that can proceed, it reviews compatibility, merges the base, repairs dependency-related problems and runs checks. It preserves existing commits, titles, descriptions and draft status.
+The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. For each PR that can proceed, it checks the intended behavior and trusted review feedback, merges the base, repairs problems within the PR's scope and runs checks. It preserves existing commits, titles, descriptions and draft status.
 
-The [`update-dependencies` skill](skills/update-dependencies/SKILL.md) handles preparation. A target repo can replace it with `.workshop/skills/update-dependencies/SKILL.md` on its default branch.
+The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with `.workshop/skills/prepare-pr/SKILL.md` on its default branch.
 
 If the PR's commits, base, eligibility, title, description or trusted feedback change outside this run, preparation stops for that PR. Rerun to reassess it. Pushes refuse concurrent branch changes; only one `prepare` run per repo can run on a machine.
 
@@ -146,7 +146,7 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
-Preparation cases use a local dependency fixture with a documented resolver and tests. `./workshop.py eval --skill update-dependencies` checks clean updates, compatibility repairs, lockfile conflicts, owner decisions and a shared CI blocker. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing and need no external dependency registry. They are excluded from issue-routing evals.
+`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and a shared CI blocker. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing, need no external dependency registry and are excluded from issue-routing evals.
 
 | Option | Default | |
 |---|---|---|
@@ -181,7 +181,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
-- For `prepare`, the tool supplies diffs, checks, failed logs and feedback from people with push access. The agent has no GitHub tools and receives no Dependabot descriptions or comments.
+- For `prepare`, the tool supplies diffs, checks and failed logs. It includes PR titles, descriptions and feedback only from people with push access. The agent has no GitHub tools.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
@@ -236,7 +236,7 @@ A job on this repository that writes a new skill. The issue cites past `other` j
 
 ### Update dependencies
 
-Extend dependency preparation to requested versions and dependency PRs from other authors. Dependency surveys need the answer outcome. Extend the PR preparation entry point to other kinds of existing PRs with their own scope rules and evals.
+Support dependency updates requested through issues. Dependency surveys need the answer outcome.
 
 ### Jobs from telemetry
 
