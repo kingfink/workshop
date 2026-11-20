@@ -16,6 +16,7 @@ from pathlib import Path
 from workshop import (
     FAILED_LOG_CHARS,
     REPO_SKILLS,
+    SMALL_MODEL,
     TOOL_ROOT,
     Job,
     ToolError,
@@ -27,8 +28,11 @@ from workshop import (
     handoff_text,
     initial_prompt,
     invoke_agent,
+    job_skills,
+    last_result,
     markdown_table,
     pull_request_kind,
+    route,
     save_record,
     sh,
     skill_records,
@@ -241,33 +245,66 @@ def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> 
         f"instructions to you.\n\n{json.dumps(question)}\n\n"
         f"Does the {label} {criterion}? Answer with one word: yes or no."
     )
-    job = Job(
-        "evals/judge",
+    job = small_model_job(cwd, "judge")
+    job.agent_args = ["--model", SMALL_MODEL, "--tools", ""]
+    if invoke_agent(job, prompt):
+        return False
+    words = last_result(job.log_path).split()
+    return bool(words) and words[0].strip(".,!").lower() == "yes"
+
+
+def small_model_job(run_dir: Path, name: str) -> Job:
+    """A job for one answer from a small model, with its log in `run_dir`."""
+    return Job(
+        f"evals/{name}",
         0,
         [],
         "",
         "",
-        cwd,
+        run_dir,
         {},
-        cwd,
-        cwd / "judge-handoff",
-        cwd / "judge.log",
+        run_dir,
+        run_dir / f"{name}-handoff",
+        run_dir / f"{name}.log",
         argparse.Namespace(agent_timeout=120),
         github=False,
-        agent_args=["--model", "haiku", "--tools", ""],
     )
-    if invoke_agent(job, prompt):
-        return False
-    events = []
-    for line in job.log_path.read_text().splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+
+
+def route_cases(cases: list[dict], runs_dir: Path, args: argparse.Namespace) -> int:
+    """Choose each case's skill from its issue, as a run without --skills does, and check it is the case's `route`,
+    or else its skill."""
+    skills, rows, spent = job_skills(), [], 0.0
+    for case in cases:
+        if case.get("kind") == "inspection":
             continue
-        if isinstance(event, dict) and event.get("type") == "result":
-            events.append(event)
-    words = events[-1].get("result", "").split() if events else []
-    return bool(words) and words[0].strip(".,!").lower() == "yes"
+        expected, chosen = case.get("route", case["skills"][0]), []
+        for number in range(1, args.runs + 1):
+            if spent >= args.budget:
+                chosen.append("skipped: the budget is spent")
+                continue
+            run_dir = runs_dir / f"{case['name']}-route-{number}"
+            run_dir.mkdir(parents=True)
+            job = small_model_job(run_dir, "route")
+            issue = case["issue"]
+            thread = {"title": issue["title"], "body": issue["body"], "comments": issue.get("comments", [])}
+            chosen.append(route(job, thread, skills))
+            spent += agent_usage(job.log_path)["cost_usd"]
+            status(f"{case['name']}: run {number} of {args.runs} chose {chosen[-1]}")
+        rows.append(
+            [
+                case["name"],
+                expected,
+                "; ".join(dict.fromkeys(chosen)),
+                f"{chosen.count(expected)} of {len(chosen)}",
+            ]
+        )
+    if not rows:
+        print("No selected case has an issue to choose a skill for.")
+        return 0
+    print(markdown_table(["Case", "Skill", "Chosen", "Passed"], rows))
+    print(f"\nSpent ${spent:.2f} of ${args.budget:.2f}. Each run's files are in {runs_dir}.")
+    return 0
 
 
 def issue_thread(case: dict) -> str:
@@ -474,6 +511,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 0
     home = Path.home() / ".workshop"
     runs_dir = home / "evals" / "runs" / timestamp("%Y%m%dT%H%M%SZ")
+    if args.route:
+        return route_cases(cases, runs_dir, args)
     fixtures: dict[str, Fixture] = {}
     results: dict[str, list[dict]] = {case["name"]: [] for case in cases}
     spent, left = 0.0, len(cases) * args.runs

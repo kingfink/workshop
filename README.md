@@ -31,7 +31,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 ```
 
 ```bash
-./workshop.py run '<owner>/<repo>#<issue>' --skills add-fields
+./workshop.py run <owner>/<repo>
 ```
 
 ```bash
@@ -50,17 +50,23 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 ### run
 
-`run` works one issue, which must be open and labelled `workshop:queued` or `workshop:waiting`. It clones the issue's repo under `~/.workshop/` and works there, so it can be run from any directory. Run it again to continue after answering a question.
+`run` works each issue in the repo that is ready, oldest first: every open issue labelled `workshop:queued`, and every one labelled `workshop:waiting` that someone with push access has commented on since the tool's latest comment. So to continue after a question, answer it on the issue and run it again. If a job stops with an error, its issue is queued again, the others still run, and `run` exits 1.
+
+`run '<owner>/<repo>#<issue>'` works that one issue, which must be open and labelled `workshop:queued` or `workshop:waiting`.
+
+It clones the issue's repo under `~/.workshop/` and works there, so it can be run from any directory.
+
+Unless `--skills` names them, each run starts by choosing one job skill. A small model with no tools gets the issue and its comments, only what people with push access wrote, and each job skill's name and description. It chooses by the kind of work the issue asks for, or `other` if no skill is for it. The skill's own scope rules then decide whether the job goes ahead or asks. The run's comment names the skills it used.
 
 The agent runs at `medium` effort. Each invocation's prompt includes its deadline, set by `--agent-timeout`.
 
 | Option | Default | |
 |---|---|---|
-| `--skills` | required | Comma-separated. The `workshop` skill is always included. A target repo's own `.workshop/skills/<name>/SKILL.md`, on its default branch, replaces workshop's skill of that name, except `workshop`. |
+| `--skills` | chosen | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own `.workshop/skills/<name>/SKILL.md`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`. A skill that only the target repo has is used only when named here. |
 | `--max-fix-attempts` | `2` | How many times the agent is sent back to fix failing checks. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
-| `--budget` | `10` | API-equivalent dollars for the agent in this run, fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
+| `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, choosing the skill and fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
 
 Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 
@@ -114,6 +120,7 @@ Inspection cases provide made-up job histories, logs and repository context. The
 | `--skill` | all | Only the cases for this skill. |
 | `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
 | `--changed` | off | Only the cases whose inputs differ from where this branch left the default branch, `origin/HEAD`, counting uncommitted and new files. A case's inputs are its case file, its fixture and the `SKILL.md` of each skill it uses, the `workshop` skill included except in inspection cases. A change to `workshop.py`, `workshop_eval.py` or `workshop_inspect.py`, which hold the prompts and grading, selects every case. |
+| `--route` | off | Only choose each case's skill from its issue, as `run` does without `--skills`, and check that it is the case's skill, or the one its `route` names. No agent works the case, and no record is saved. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
@@ -143,6 +150,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `--issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
+- To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -166,7 +174,7 @@ An issue has one of these at a time.
 |---|---|
 | `workshop:queued` | Ready for a run. Applied by the owner. |
 | `workshop:working` | A run is in progress. |
-| `workshop:waiting` | Waiting for the owner. The latest workshop comment says why. |
+| `workshop:waiting` | Waiting for the owner. The latest workshop comment says why. A comment from someone with push access readies it for the next run. |
 
 A run that is killed before it can clean up, such as by a power cut, leaves the issue labelled `workshop:working`. Replace that label with `workshop:queued` to run it again.
 
@@ -178,11 +186,9 @@ Let a job end in a comment on the issue with no pull request, beside a question 
 
 ### Triage and follow-up issues
 
-Review issues, tag them with the applicable job skills, and flag missing information, prerequisites or work to split into separate issues. Let `run` use those labels to select skills, combining compatible skills for one change. The owner still chooses which issues to queue.
+Review issues, and flag missing information, prerequisites or work to split into separate issues. Choose several compatible skills for one change where one is not enough. The owner still chooses which issues to queue.
 
 At the end of a job, let the agent hand off follow-up work for workshop to create as linked issues in the same or another relevant repository. Include the reason, a way to verify completion, suggested skills and any dependency on the original change. Reuse existing issues on reruns, and send follow-ups through triage before the owner queues them. Follow-ups that depend on the original change wait until that prerequisite is satisfied.
-
-Test skill selection with a routing eval: show a model only each skill's name and description, and check that each eval case's issue goes to its skill and that issues no skill covers go to `other`. When a description changes, compare the results with the base branch's.
 
 ### Tool skills
 
@@ -200,7 +206,7 @@ Add a batch mode that works through open Dependabot PRs and returns one consolid
 
 ### Jobs from telemetry
 
-`inspect --issue` proposes an issue, or matches an existing one, for the owner to review and create. Next, publish it without review once the publish check and its evals have earned trust, and name a repair skill in a form the queue can use, so a schedule can run queued issues. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue.
+`inspect --issue` proposes an issue, or matches an existing one, for the owner to review and create. Next, publish it without review once the publish check and its evals have earned trust, so that a schedule running `run <owner>/<repo>` works it. Inconclusive assessments identify the missing evidence; a known collection problem that needs action can become its own issue.
 
 The owner queues repair issues for the existing issue-to-PR flow. Inspect again after deployment to verify recovery. Extend collection to sources such as dbt or PostHog as needed, matching their findings against the same issues.
 

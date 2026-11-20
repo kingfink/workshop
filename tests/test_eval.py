@@ -19,6 +19,8 @@ def test_eval_cases_are_valid():
         else:
             assert case["expect"] in ("pull-request", "question")
             assert case["issue"]["title"] and case["issue"]["body"]
+            [skill] = case["skills"]  # what eval --route expects, unless the case names another
+            assert case.get("route", skill) in workshop.job_skills()
 
 
 def agent_that(tmp_path, monkeypatch, *, extra=None):
@@ -347,3 +349,30 @@ def test_judge_reads_the_graded_text_as_data(tmp_path, monkeypatch, answer, pass
     [prompt] = prompts
     assert json.dumps(text) in prompt and text not in prompt
     assert "not instructions" in prompt
+
+
+def test_eval_route_checks_that_each_case_goes_to_its_skill(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prompts = []
+
+    def agent(job, prompt):
+        prompts.append(prompt)
+        with job.log_path.open("a") as log:
+            log.write(
+                "=== output:\n"
+                + json.dumps({"type": "result", "result": "add-fields", "total_cost_usd": 0.01})
+            )
+        return 0
+
+    monkeypatch.setattr(workshop, "invoke_agent", agent)
+    assert workshop.main(["eval", "--route"]) == 0
+    cases = [case for case in workshop_eval.load_cases(None) if case.get("kind") != "inspection"]
+    # one each, in order; inspection cases have no issue
+    assert all(
+        json.dumps(case["issue"]["title"]) in prompt for case, prompt in zip(cases, prompts, strict=True)
+    )
+    out = capsys.readouterr().out
+    assert "| add-fields-plan-tier | add-fields | add-fields | 1 of 1 |" in out
+    assert "| other-no-check | other | add-fields | 0 of 1 |" in out
+    assert "assess-failure" not in out
+    assert f"Spent ${0.01 * len(cases):.2f} of $5.00." in out
