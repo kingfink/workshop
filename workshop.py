@@ -24,7 +24,6 @@ SKILLS_DIR = TOOL_ROOT / "skills"
 REPO_SKILLS = Path(".workshop/skills")  # a target repo's own skills, read from its default branch
 
 LABELS = {  # name: (color, description)
-    "workshop:ignore": ("ededed", "Exclude this pull request from workshop prepare."),
     "workshop:queued": ("5319e7", "Ready for a run. Applied by the owner."),
     "workshop:working": ("fbca04", "A run is in progress."),
     "workshop:waiting": (
@@ -32,6 +31,7 @@ LABELS = {  # name: (color, description)
         "Waiting for the owner. The latest workshop comment says why. Comment to continue.",
     ),
 }
+PREPARE_LABEL = ("ededed", "Exclude this pull request from workshop prepare.")
 
 TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
 SMALL_MODEL = "haiku"  # chooses each job's skill, and in evals grades answers
@@ -807,9 +807,10 @@ def pr_checks(repo: str, pr: int) -> tuple[str, list[dict]]:
     return info["headRefOid"], checks
 
 
-def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
+def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous_head: str = "") -> dict:
     """Record validation of one commit. No checks or only skipped checks do not establish a pass."""
     start = time.monotonic()
+    head_seen = False
     while True:
         observed_head, checks = pr_checks(repo, pr)
         head = head or observed_head
@@ -822,7 +823,13 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
             "checks": checks,
         }
         if observed_head != head:
+            elapsed = time.monotonic() - start
+            grace = min(2 * CHECKS_POLL_S, timeout_s)
+            if not head_seen and previous_head and observed_head == previous_head and elapsed < grace:
+                time.sleep(min(CHECKS_POLL_S, grace - elapsed))
+                continue
             return {**result, "reason": "head-changed", "observed_head_sha": observed_head, "checks": []}
+        head_seen = True
         elapsed = time.monotonic() - start
         failing = any(check["bucket"] == "fail" for check in checks)
         if checks and all(check["bucket"] != "pending" for check in checks):
@@ -838,16 +845,24 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "") -> dict:
         time.sleep(CHECKS_POLL_S)
 
 
-def failing_logs(repo: str, failing: list[dict]) -> str:
+def failing_logs(repo: str, failing: list[dict], include_trigger: bool = False) -> str:
     """The end of each failed GitHub Actions run's log."""
     run_ids = dict.fromkeys(re.findall(r"/actions/runs/(\d+)", " ".join(check["link"] for check in failing)))
-    logs = [
-        f"--- run {run_id}\n"
-        + gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
+    logs = []
+    for run_id in run_ids:
+        title = f"--- run {run_id}"
+        if include_trigger:
+            try:
+                run = gh_json("api", f"repos/{repo}/actions/runs/{run_id}")
+                actor = (run.get("actor") or {}).get("login")
+                if actor:
+                    title += f" ({run.get('event', 'unknown event')}, actor: {actor})"
+            except ToolError:
+                pass  # The failed log may be available even if run metadata is not.
+        log = gh("run", "view", run_id, "--repo", repo, "--log-failed", check=False).stdout.strip()[
             -FAILED_LOG_CHARS:
         ]
-        for run_id in run_ids
-    ]
+        logs.append(f"{title}\n{log}")
     return "\n".join(logs) or "(no GitHub Actions logs found; see the checks on the pull request)"
 
 
@@ -1255,7 +1270,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     require_gh_login()
-    for name, (color, description) in LABELS.items():
+    for name, (color, description) in {**LABELS, "workshop:ignore": PREPARE_LABEL}.items():
         gh(
             "label",
             "create",

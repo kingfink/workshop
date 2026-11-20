@@ -84,9 +84,9 @@ Before editing, every job's agent decides what done is and finds a check that sh
 
 ### prepare
 
-`prepare <owner>/<repo>` reviews open PRs whose branches are in the target repo, regardless of author. It skips drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. `workshop:ignore` always excludes a PR. No queue label is needed.
+`prepare <owner>/<repo>` reviews open PRs from people with push access and Dependabot, with head branches in the target repo. It skips drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. Both forms skip PRs labeled `workshop:ignore` and branches that are the repo's default, start with `workshop/`, or are the head or base of another open PR. No queue label is needed.
 
-The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. For each PR that can proceed, it checks the intended behavior and trusted review feedback, merges the base, repairs problems within the PR's scope and runs checks. It preserves existing commits, titles, descriptions and draft status.
+The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. It checks intended behavior and trusted review feedback, merges the base when making a repair or resolving a conflict, and verifies GitHub checks. Clean PRs get no commits. When GitHub reports a branch is out of date, the report asks the owner to update it.
 
 The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with `.workshop/skills/prepare-pr/SKILL.md` on its default branch.
 
@@ -181,7 +181,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
-- For `prepare`, the tool supplies diffs, checks and failed logs. It includes PR titles, descriptions and feedback only from people with push access. The agent has no GitHub tools.
+- For `prepare`, the tool supplies diffs, checks and failed logs. Only PRs from people with push access or the GitHub Dependabot account supply a diff. Titles, descriptions and feedback come from people with push access. The agent has no GitHub tools.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.

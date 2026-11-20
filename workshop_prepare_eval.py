@@ -59,6 +59,9 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
             (clone / "dependencies.json").write_text('{"widget": 1, "helper": 2}\n')
             (clone / "dependencies.lock").write_text('{"helper": 2, "widget": 1}\n')
             base = commit(clone, "Update helper on base")
+        if case.get("behind"):
+            (clone / "unrelated.txt").write_text("An unrelated change on the base.\n")
+            base = commit(clone, "Advance base without a conflict")
     else:
         head = base
     job = w.Job(
@@ -111,7 +114,10 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
                 permitted.update(("dependencies.json", "dependencies.lock"))
             if dirty or set(changed) - permitted:
                 passed, why = False, "uncommitted changes or changes outside the PR's scope"
-            for ancestor in (head, base):
+            if case.get("compatible") and not case.get("conflict") and current != head:
+                passed, why = False, "created a commit on an already compatible PR"
+            ancestors = (head, base) if current != head or case.get("conflict") else (head,)
+            for ancestor in ancestors:
                 if w.git(
                     "-C", clone, "merge-base", "--is-ancestor", ancestor, current, check=False
                 ).returncode:
@@ -129,12 +135,10 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
                     passed, why = False, "lost requested updates or produced an inconsistent lockfile"
             if ast.dump(ast.parse(blob("app.py"))) != ast.dump(ast.parse(expected_app)):
                 passed, why = False, "did not implement the expected application behavior"
-            if case.get("compatible") and not case.get("conflict") and changed:
-                passed, why = False, "changed an already compatible PR"
         if passed and not judge(json.dumps(result), case["criterion"], run_dir, "preparation report"):
             passed, why = False, "report did not meet the evidence criterion"
         if passed:
             why = "prepared and preserved existing work" if case["expect"] == "ready" else case["expect"]
-    except (w.ToolError, ValueError) as exc:
+    except (w.ToolError, ValueError, SyntaxError) as exc:
         passed, why = False, str(exc)
     return eval_result(job, case, passed, why)

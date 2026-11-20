@@ -19,9 +19,13 @@ def pr(number=12, **values):
         "state": "open",
         "draft": False,
         "labels": [],
-        "user": {"login": "dependabot[bot]"},
-        "head": {"ref": "dependabot/uv/widget-2", "sha": "a" * 40, "repo": {"full_name": REPO}},
-        "base": {"ref": "main", "sha": "b" * 40},
+        "author_association": "OWNER",
+        "head": {
+            "ref": f"feature-{number}",
+            "sha": "a" * 40,
+            "repo": {"full_name": REPO, "default_branch": "main"},
+        },
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": REPO}},
         **values,
     }
 
@@ -72,11 +76,11 @@ def test_batch_selection_and_explicit_drafts(monkeypatch):
         pr(3),
         pr(2, draft=True),
         pr(4, labels=[{"name": "workshop:ignore"}]),
-        pr(5, user={"login": "owner", "id": 2}),
+        pr(5, author_association="NONE", user={"login": "dependabot[bot]", "type": "Bot"}),
         pr(1),
     ]
     monkeypatch.setattr(p, "pages", lambda _: candidates)
-    assert [item["number"] for item in p.select_prs(REPO, None, False)] == [1, 3, 5]
+    assert [item["number"] for item in p.select_prs(REPO.upper(), None, False)] == [1, 3, 5]
     assert [item["number"] for item in p.select_prs(REPO, None, True)] == [1, 2, 3, 5]
     monkeypatch.setattr(p, "read_pr", lambda *_: candidates[1])
     assert p.select_prs(REPO, 2, False) == [candidates[1]]
@@ -97,6 +101,36 @@ def test_exclusions(change, reason):
     assert reason in p.excluded(pr(**change), REPO, True)
 
 
+@pytest.mark.parametrize("side", ["head", "base"])
+def test_shared_destination_excludes_even_an_explicit_pr(monkeypatch, side):
+    target, other = pr(12), pr(13, draft=True)
+    other[side] = target["head"]
+    monkeypatch.setattr(p, "open_prs", lambda _: [target, other])
+    monkeypatch.setattr(p, "read_pr", lambda *_: target)
+    with pytest.raises(w.ToolError, match=f"{side} of open PR #13"):
+        p.select_prs(REPO, 12, False)
+    monkeypatch.setattr(p, "feedback", lambda *a: [])
+    with pytest.raises(w.ToolError, match="eligibility changed"):
+        p.guard(REPO, target, False, target["head"]["sha"], [], True)
+
+
+@pytest.mark.parametrize("ref, reason", [("main", "default branch"), ("workshop/issue-12", "reserved")])
+def test_default_and_workshop_branches_excluded_even_explicitly(monkeypatch, ref, reason):
+    target = pr()
+    target["base"]["ref"] = "release"
+    target["head"]["ref"] = ref
+    monkeypatch.setattr(p, "read_pr", lambda *_: target)
+    with pytest.raises(w.ToolError, match=reason):
+        p.select_prs(REPO, 12, False)
+
+
+def test_other_bot_cannot_supply_a_patch_even_if_it_is_a_member(monkeypatch):
+    other = pr(user={"login": "github-actions[bot]", "type": "Bot"}, author_association="MEMBER")
+    monkeypatch.setattr(p, "read_pr", lambda *_: other)
+    with pytest.raises(w.ToolError, match="author must have push access or be Dependabot"):
+        p.select_prs(REPO, 12, False)
+
+
 def test_only_trusted_feedback_reaches_the_agent(monkeypatch):
     monkeypatch.setattr(
         p,
@@ -110,6 +144,7 @@ def test_only_trusted_feedback_reaches_the_agent(monkeypatch):
                 "state": "CHANGES_REQUESTED",
             },
             {"id": 3, "author_association": "OWNER", "body": p.MARKER},
+            {"id": 4, "author_association": "MEMBER", "user": {"type": "Bot"}, "body": "bot prose"},
         ],
     )
     result = p.feedback(REPO, 12)
@@ -117,9 +152,11 @@ def test_only_trusted_feedback_reaches_the_agent(monkeypatch):
     assert all(item["body"] == "requested change" for item in result)
 
 
-@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"])
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "NONE"])
 def test_request_only_includes_trusted_authors(monkeypatch, association):
     item = pr(author_association=association, title="Add a feature", body="Keep existing behavior")
+    if association == "NONE":
+        item["user"] = {"login": "dependabot[bot]", "type": "Bot"}
     monkeypatch.setattr(p, "feedback", lambda *a: [])
     monkeypatch.setattr(w, "pr_checks", lambda *a: (item["head"]["sha"], []))
     monkeypatch.setattr(w, "gh", lambda *a: argparse.Namespace(stdout="patch"))
@@ -127,6 +164,32 @@ def test_request_only_includes_trusted_authors(monkeypatch, association):
     expected = {"title": item["title"], "body": item["body"]} if association in w.TRUSTED_AUTHORS else {}
     assert evidence["request"] == expected
     assert evidence["diff"] == "patch"
+    assert evidence["dependabot"] == (association == "NONE")
+
+
+def test_push_can_move_a_comment_and_dismiss_an_approval(monkeypatch):
+    original = pr()
+    current = copy.deepcopy(original)
+    current["head"]["sha"] = "after-push"
+    notes = [
+        {"kind": "inline", "id": 1, "body": "Keep the test", "path": "test.py", "line": 10},
+        {"kind": "review", "id": 2, "reviewer": 42, "state": "APPROVED", "body": "Thanks"},
+    ]
+    fresh = [{**notes[0], "line": None}, {**notes[1], "state": "DISMISSED"}]
+    monkeypatch.setattr(p, "read_pr", lambda *_: current)
+    monkeypatch.setattr(p, "feedback", lambda *_: fresh)
+    monkeypatch.setattr(w, "gh_json", lambda *a: {"reviewDecision": "REVIEW_REQUIRED"})
+    guarded = p.guard(REPO, original, False, "after-push", notes)
+    result = p.final_result(REPO, {"status": "ready", "reason": "Checks passed."}, guarded, notes)
+    assert result["status"] == "ready"
+    assert "needs reapproval" in result["reason"]
+    fresh[0]["body"] = "New feedback"
+    with pytest.raises(w.ToolError, match="review feedback changed"):
+        p.guard(REPO, original, False, "after-push", notes)
+    fresh[0]["body"] = notes[0]["body"]
+    notes[1]["state"] = "CHANGES_REQUESTED"
+    with pytest.raises(w.ToolError, match="review feedback changed"):
+        p.guard(REPO, original, False, "after-push", notes)
 
 
 @pytest.mark.parametrize("field", ["head", "base", "feedback", "draft", "ignore", "closed", "body"])
@@ -149,7 +212,7 @@ def test_guard_detects_changes(monkeypatch, field):
     monkeypatch.setattr(p, "read_pr", lambda *_: current)
     monkeypatch.setattr(p, "feedback", lambda *_: notes)
     with pytest.raises(w.ToolError):
-        p.guard(REPO, original, False, original["head"]["sha"], p.fingerprint([]))
+        p.guard(REPO, original, False, original["head"]["sha"], [])
 
 
 @pytest.mark.parametrize(
@@ -229,7 +292,7 @@ def git_job(tmp_path):
     w.git("clone", "--bare", seed, remote)
     w.git("-C", seed, "remote", "add", "origin", remote)
     w.git("clone", remote, clone)
-    branch = p.checkout(REPO, item, clone, tree)
+    branch = p.checkout(item, clone, tree)
     task = job(tmp_path)
     task.clone, task.worktree, task.branch = clone, tree, branch
     task.base, task.pushed = item["base"]["sha"], item["head"]["sha"]
@@ -250,12 +313,60 @@ def git_job(tmp_path):
 def test_push_preserves_history_and_rerun_does_not_push(git_job, monkeypatch):
     task, item, _, remote, _ = git_job
     monkeypatch.setattr(p, "guard", lambda *a: None)
-    assert p.push(task, item, False, "")
+    assert p.push(task, item, False, [])
     published = w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip()
     assert published == task.pushed
     assert (task.worktree / "unrelated.txt").read_text() == "preserve me\n"
     w.git("-C", task.clone, "merge-base", "--is-ancestor", item["head"]["sha"], task.pushed)
-    assert not p.push(task, item, False, "")
+    assert not p.push(task, item, False, [])
+
+
+def test_clean_behind_pr_keeps_its_head(git_job, monkeypatch):
+    task, item, _, remote, _ = git_job
+    w.git("-C", task.worktree, "reset", "--hard", task.pushed)
+    monkeypatch.setattr(p, "guard", lambda *a: pytest.fail("an unchanged branch should never be pushed"))
+    assert not p.push(task, item, False, [])
+    assert w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip() == task.pushed
+    current = {**item, "mergeable_state": "behind", "feedback": []}
+    result = p.final_result(REPO, {"status": "ready", "reason": "Checks passed."}, current, [])
+    assert result["status"] == "blocked" and "Update the branch" in result["reason"]
+
+
+def test_conflict_only_repair_publishes_the_merge_commit(git_job, monkeypatch):
+    task, item, seed, remote, commit = git_job
+    task.base = commit(seed, "dependency.txt", "3\n")
+    w.git("-C", seed, "push", "origin", "main")
+    w.git("-C", task.clone, "fetch", "origin")
+    w.git("-C", task.worktree, "reset", "--hard", task.pushed)
+    conflict = w.git(
+        "-C",
+        task.worktree,
+        "-c",
+        "user.name=workshop",
+        "-c",
+        "user.email=w@localhost",
+        "merge",
+        "--no-edit",
+        task.base,
+        check=False,
+    )
+    assert conflict.returncode and "CONFLICT" in conflict.stdout
+    (task.worktree / "dependency.txt").write_text("2\n")
+    repaired = pe.commit(task.worktree, "Resolve dependency conflict")
+    monkeypatch.setattr(p, "guard", lambda *a: None)
+    assert p.push(task, item, False, [])
+    assert w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip() == repaired
+    parents = w.git("-C", task.clone, "show", "-s", "--format=%P", repaired).stdout.split()
+    assert parents == [item["head"]["sha"], task.base]
+
+
+def test_fresh_checkout_recovers_from_a_detached_worktree(git_job):
+    task, item, _, _, _ = git_job
+    w.git("-C", task.worktree, "checkout", "--detach")
+    fresh = task.worktree.with_name("fresh")
+    branch = p.checkout(item, task.clone, fresh)
+    assert branch != task.branch
+    assert w.git("-C", fresh, "rev-parse", "HEAD").stdout.strip() == task.pushed
 
 
 def test_atomic_lease_refuses_a_concurrent_remote_commit(git_job, monkeypatch):
@@ -268,7 +379,7 @@ def test_atomic_lease_refuses_a_concurrent_remote_commit(git_job, monkeypatch):
 
     monkeypatch.setattr(p, "guard", racing_guard)
     with pytest.raises(w.ToolError, match="stale info"):
-        p.push(task, item, False, "")
+        p.push(task, item, False, [])
     assert w.git("--git-dir", remote, "rev-parse", item["head"]["ref"]).stdout.strip() == newer
 
 
@@ -277,10 +388,10 @@ def test_push_refuses_rewritten_or_uncommitted_work(git_job, monkeypatch):
     monkeypatch.setattr(p, "guard", lambda *a: None)
     (task.worktree / "unrelated.txt").write_text("uncommitted")
     with pytest.raises(w.ToolError, match="uncommitted"):
-        p.push(task, item, False, "")
+        p.push(task, item, False, [])
     w.git("-C", task.worktree, "reset", "--hard", task.base)
     with pytest.raises(w.ToolError):
-        p.push(task, item, False, "")
+        p.push(task, item, False, [])
 
 
 @pytest.mark.parametrize(
@@ -336,7 +447,7 @@ def test_report_updates_only_our_comment(monkeypatch):
 
 def test_batch_assesses_before_repairs_and_continues_after_failure(tmp_path, monkeypatch, capsys):
     events = []
-    candidates = [pr(12), pr(13, user={"login": "owner"})]
+    candidates = [pr(12), pr(13)]
     monkeypatch.setattr(w, "prepare_worktree", lambda *a: "base")
     monkeypatch.setattr(w, "copy_repo_skills", lambda *a: None)
     monkeypatch.setattr(w, "repo_settings", lambda *a: {})
@@ -358,7 +469,8 @@ def test_batch_assesses_before_repairs_and_continues_after_failure(tmp_path, mon
         return {n: {"status": "prepare", "reason": "review"} for n in (12, 13)}
 
     monkeypatch.setattr(p, "assess", assess)
-    monkeypatch.setattr(p, "guard", lambda *a: None)
+    monkeypatch.setattr(p, "guard", lambda *a: {"feedback": []})
+    monkeypatch.setattr(w, "git", lambda *a, **kw: argparse.Namespace(returncode=0))
     monkeypatch.setattr(p, "checkout", lambda *a: "branch")
 
     def prepare(task, *_):
@@ -382,31 +494,42 @@ def test_no_eligible_prs_does_not_invoke_agent(tmp_path, monkeypatch, capsys):
     assert "No eligible" in capsys.readouterr().out
 
 
-def test_fix_loop_can_stop_on_an_external_blocker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("second_status", ["blocked", "ready"])
+def test_fix_loop_stops_on_an_external_blocker_or_no_commit(tmp_path, monkeypatch, second_status):
     task = job(tmp_path)
     monkeypatch.setattr(p, "guard", lambda *a: None)
     pushes, prompts = [], []
-    monkeypatch.setattr(p, "push", lambda *a: pushes.append("push"))
+
+    def push(*a):
+        pushes.append("push")
+        return len(pushes) == 1
+
+    polls = []
+    monkeypatch.setattr(p, "push", push)
     monkeypatch.setattr(
         w,
         "wait_for_checks",
-        lambda *a: {
-            "status": "failed",
-            "reason": "checks-failed",
-            "checks": [{"bucket": "fail"}],
-        },
+        lambda *a: (
+            polls.append(a)
+            or {
+                "status": "failed",
+                "reason": "checks-failed",
+                "checks": [{"bucket": "fail"}],
+            }
+        ),
     )
     monkeypatch.setattr(w, "failing_logs", lambda *a: "Missing CI service credentials")
 
     def agent(self, prompt):
         prompts.append(prompt)
-        state = "ready" if len(prompts) == 1 else "blocked"
+        state = "ready" if len(prompts) == 1 else second_status
         (self.handoff / "preparation.json").write_text(json.dumps({"status": state, "summary": "reviewed"}))
         return 0
 
     monkeypatch.setattr(w.Job, "run_agent", agent)
     assert p.prepare_one(task, pr(), {"feedback": []}, "review", False)["status"] == "blocked"
-    assert len(prompts) == 2 and len(pushes) == 1
+    assert len(prompts) == 2 and len(polls) == 1
+    assert len(pushes) == (2 if second_status == "ready" else 1)
     assert "Missing CI service credentials" in prompts[1]
 
 
