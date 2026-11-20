@@ -60,6 +60,7 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 | `--max-fix-attempts` | `2` | How many times the agent is sent back to fix failing checks. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
+| `--budget` | `10` | API-equivalent dollars for the agent in this run, fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
 
 Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 

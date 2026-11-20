@@ -64,6 +64,13 @@ def test_claude_command_confines_the_agent(fake):
     ]
     assert sandbox["enabled"] and sandbox["network"]["allowedDomains"] == ["bigquery.googleapis.com"]
 
+    # each invocation may spend what is left of the run's budget
+    assert "--max-budget-usd" not in cmd  # no budget, no cap: eval and inspect set their own
+    log = fake.path.parent / "agent.log"
+    log.write_text("=== output:\n" + json.dumps({"type": "result", "total_cost_usd": 0.25}) + "\n")
+    capped = claude_command(dataclasses.replace(job, log_path=log, budget=0.4))
+    assert flag(capped, "--max-budget-usd") == "0.15"
+
 
 def test_agent_gets_no_secrets(fake, monkeypatch):
     monkeypatch.setenv("CLOUD_SECRET", "s3cret")
@@ -277,6 +284,19 @@ def test_agent_timeout(fake):
     fake.set(agent_mode="sleep")
     assert fake.outcome(*RUN, "--agent-timeout", "1") == "escalated"
     assert "timed out after 1s" in fake.summaries()[0]
+
+
+def test_spent_budget_escalates_instead_of_a_fix_attempt(fake):
+    fake.set(checks=[{"build": "fail"}])
+    assert fake.outcome(*RUN, "--budget", "0.25") == "escalated"  # the fake agent spends $0.25 a run
+    assert len(fake.state["agent_runs"]) == 1
+    assert "the run's budget of $0.25 is spent, and checks are still failing: build" in fake.summaries()[0]
+
+
+def test_agent_that_spends_the_budget_without_a_handoff_escalates(fake):
+    fake.set(agent_mode="silent")
+    assert fake.outcome(*RUN, "--budget", "0.25") == "escalated"
+    assert "the agent spent the run's budget of $0.25 without leaving" in fake.summaries()[0]
 
 
 def test_agent_deadline_uses_each_invocations_timeout(fake):
