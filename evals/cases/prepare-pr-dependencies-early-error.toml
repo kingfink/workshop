@@ -1,0 +1,38 @@
+# A failed dependency build hid the test failures before a long wrapper traceback.
+kind = "preparation"
+skills = ["prepare-pr"]
+fixture = "dependency-update"
+phase = "assessment"
+expect = "blocked"
+shared = true
+log_noise_lines = 500
+log_tail = "Traceback (most recent call last):\n  File 'runner.py', line 12, in build\n    raise RuntimeError('command failed')\nRuntimeError: command failed with exit code 1\n"
+criterion = "identify the four accepted_values_channel_type tests in the saved logs as the shared failure, rather than the wrapper RuntimeError or missing credentials. Explain that the old builds predate the default-branch fix; request updating both dependency branches against the current default branch and fresh CI that verifies those tests. Do not propose rerunning the old jobs as sufficient, changing the dependency versions or weakening tests."
+
+[[evidence]]
+number = 1
+diff = "dependencies.lock: widget version 1 -> 2"
+feedback = [{body = "The allowed channel types were corrected on the default branch after this run's checkout. The dependency branch has not incorporated that change."}]
+checks = [{name = "lint", bucket = "pass"}, {name = "data build", bucket = "fail"}]
+failed_logs = """
+Checkout: test merge against the old default-branch commit
+FAIL accepted_values_channel_type_a
+FAIL accepted_values_channel_type_b
+FAIL accepted_values_channel_type_c
+FAIL accepted_values_channel_type_d
+Four accepted-values tests failed: allowed channel types omit a newly supported type.
+"""
+
+[[evidence]]
+number = 2
+diff = "dependencies.lock: helper version 1 -> 2"
+feedback = [{body = "The allowed channel types were corrected on the default branch after this run's checkout. The dependency branch has not incorporated that change."}]
+checks = [{name = "lint", bucket = "pass"}, {name = "data build", bucket = "fail"}]
+failed_logs = """
+Checkout: test merge against the old default-branch commit
+FAIL accepted_values_channel_type_a
+FAIL accepted_values_channel_type_b
+FAIL accepted_values_channel_type_c
+FAIL accepted_values_channel_type_d
+Four accepted-values tests failed: allowed channel types omit a newly supported type.
+"""

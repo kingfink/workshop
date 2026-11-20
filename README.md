@@ -107,7 +107,7 @@ Each PR gets a result: `ready`, `blocked`, `needs-info` or `error`. `ready` requ
 
 Individual failures do not stop the batch. The command exits `1` if any PR errors, `2` if any remains blocked or needs a decision, and `0` otherwise, including when none qualify.
 
-Results update the tool's own comment on each PR. Reruns reassess the current commits and feedback. The full report and agent logs stay under `~/.workshop/logs/`; `score` covers issue runs only.
+Results update the tool's own comment on each PR. Reruns reassess the current commits and feedback. The full report and agent logs stay under `~/.workshop/logs/`; `score` covers issue runs only. Complete failed-job logs are saved in the batch's `logs/` directory, with their paths in `evidence.json`, for the assessment and repair agents to read.
 
 ### score
 
@@ -146,7 +146,7 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
-`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and a shared CI blocker. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing, need no external dependency registry and are excluded from issue-routing evals.
+`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing, need no external dependency registry and are excluded from issue-routing evals.
 
 | Option | Default | |
 |---|---|---|
