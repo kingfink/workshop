@@ -6,6 +6,8 @@
 
 It also inspects configured jobs and reports whether their failures need action. Inspections publish nothing and make no repairs.
 
+`prepare` reviews existing Dependabot pull requests, repairs dependency-related problems, and reports which are ready for review. It never merges.
+
 It is for routine changes with obvious, verifiable solutions, such as adding a field or bringing docs up to date, so people can spend their time on harder work. Inspired by [Gumloop's Software Factory](https://www.gumloop.com/engineering/software-factory).
 
 ## Vocabulary
@@ -32,6 +34,10 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 ```bash
 ./workshop.py run <owner>/<repo>
+```
+
+```bash
+./workshop.py prepare <owner>/<repo>
 ```
 
 ```bash
@@ -78,6 +84,31 @@ Before editing, every job's agent decides what done is and finds a check that sh
 | `update-docs` | Bring the docs up to date with the work finished in a time window. |
 | `other` | Make any other change that a test, build, query or command can show is done. Its pull request names the kind of work, such as `Kind: rename field`. |
 
+### prepare
+
+`prepare <owner>/<repo>` works the repository's open Dependabot PRs, oldest first. It excludes drafts unless `--include-drafts` is given. `prepare '<owner>/<repo>#<pr>'` selects one PR and permits a draft. The `workshop:ignore` label excludes a PR even when it is explicitly selected. Only PRs with a branch in the target repository are supported. PRs do not need a queue label.
+
+The tool collects each PR's diff, checks, failed logs and feedback from people with push access. It assesses the batch before making repairs and groups shared blockers, such as missing CI credentials, once in the terminal report. Dependabot descriptions and comments are not passed to the agent; it reviews the dependency changes in the diff. The `update-dependencies` skill is used by `prepare`, separately from issue skill selection. A target repository can replace it with `.workshop/skills/update-dependencies/SKILL.md` on its default branch.
+
+For each PR that can proceed, the agent reviews compatibility, merges its base branch, resolves conflicts with the repository's package manager, and runs the required checks. The tool pushes commits to the existing PR branch and follows its GitHub checks, allowing dependency-related fix attempts. PR titles, descriptions and draft status are preserved. Decisions that change the PR's intent go to the owner.
+
+Before pushing or publishing a result, the tool checks the PR's head, base, eligibility and trusted feedback again. A change stops preparation of that PR; rerun to assess the new revision. Pushes preserve the existing commits and use an exact lease to refuse concurrent branch updates. A local process lock prevents overlapping `prepare` runs for the same repository on one machine. Separate clones under `~/.workshop/repos/prepare/` keep preparation apart from issue work.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--include-drafts` | off | Include drafts in a batch. Explicit PR selection also permits a draft. |
+| `--budget` | `10` | API-equivalent agent dollars per PR, including fix attempts. |
+| `--assessment-budget` | `5` | API-equivalent agent dollars for the batch assessment. |
+| `--max-fix-attempts` | `2` | Repair attempts after failing GitHub checks. |
+| `--agent-timeout` | `900` | Seconds per agent invocation. |
+| `--checks-timeout` | `300` | Seconds to wait for checks in each round. |
+
+Budget accounting has the same limits as `run`: a turn can go slightly over the cap, and timed-out invocations report no cost. A batch's allowance is the assessment budget plus the per-PR budget for each selected PR.
+
+The report lists `ready`, `blocked`, `needs-info` or `error` for every selected PR. `ready` means the agent completed its review and the reported GitHub checks passed at the recorded head and base; it does not establish that every intended check ran. No checks, only skipped checks or an unfinished wait leave a PR blocked. Local test claims are separate from the tool's GitHub validation. Exit codes are `0` when every selected PR is ready (or none qualify), `2` when an owner action or decision remains, and `1` on errors. Individual failures do not stop the rest of the batch.
+
+Each completed assessment or preparation updates the tool's own result comment on the PR. Reruns assess the current commits and feedback afresh, reuse the existing branch, and update that comment. They do not rely on local state from the previous run. The full batch report and agent logs stay under `~/.workshop/logs/`. These results are separate from the issue-run records shown by `score`.
+
 ### score
 
 `score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. A job whose pull request names its kind of work gets a row per kind, such as `other: rename field`, so you can see which kinds recur and how they end. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
@@ -115,6 +146,8 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
+Preparation cases use a local dependency fixture with a documented resolver and tests. `./workshop.py eval --skill update-dependencies` checks clean updates, compatibility repairs, lockfile conflicts, owner decisions and a shared CI blocker. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing and need no external dependency registry. They are excluded from issue-routing evals.
+
 | Option | Default | |
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
@@ -149,7 +182,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - The agent holds no GitHub credentials. It reads GitHub through GitHub's MCP server, read-only and in lockdown mode, which in a public repo hides what people without push access wrote. The tool does every write: it posts the agent's question, or pushes the job branch and opens the pull request.
 - That server runs with your `gh` token, so the agent can read the issues and pull requests of every repository the token can, not only the target repo's.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
-- In `run`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect`, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `--issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
+- In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
 - To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
@@ -160,7 +193,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 
 The agent's log streams to `~/.workshop/logs/` and stays there: it can hold anything a command printed.
 
-Each run also records its outcome, the skills it used with a hash of each, the pull request and the commit the tool last pushed, its time in the agent and waiting for checks, and the agent's model, turns, tokens, cost and tool calls, including the ones it was denied. The record goes in `~/.workshop/logs/runs.jsonl` and, hidden, in the run's comment on the issue, which shows the agent time and cost.
+Each issue run also records its outcome, the skills it used with a hash of each, the pull request and the commit the tool last pushed, its time in the agent and waiting for checks, and the agent's model, turns, tokens, cost and tool calls, including the ones it was denied. The record goes in `~/.workshop/logs/runs.jsonl` and, hidden, in the run's comment on the issue, which shows the agent time and cost.
 
 Validation is separate from the outcome: an open PR can be unverified. The `validation` record names its source (`github-checks`), status, reason, commit, observation time and reported checks with their states and links. `passed` means the reported checks finished without a failure and at least one succeeded; it does not establish that every intended check ran. Failed or cancelled checks give `failed`. No checks, only skipped or neutral checks, an unfinished wait without a known failure, or no observation give `unverified`. If the PR moves to another commit while waiting, the tool escalates instead of attributing its checks to the pushed commit. Local tests described by the agent are not tool-observed validation.
 
@@ -168,7 +201,7 @@ Costs are API-equivalent: what the tokens would cost at API prices, whether or n
 
 ## Labels
 
-An issue has one of these at a time.
+An issue has one of these workflow labels at a time.
 
 | Label | Meaning |
 |---|---|
@@ -177,6 +210,8 @@ An issue has one of these at a time.
 | `workshop:waiting` | Waiting for the owner. The latest workshop comment says why. A comment from someone with push access readies it for the next run. |
 
 A run that is killed before it can clean up, such as by a power cut, leaves the issue labelled `workshop:working`. Replace that label with `workshop:queued` to run it again.
+
+`init` also creates `workshop:ignore`, which excludes a PR from `prepare`. It is independent of the issue workflow labels.
 
 ## Roadmap ideas
 
@@ -200,9 +235,7 @@ A job on this repository that writes a new skill. The issue cites past `other` j
 
 ### Update dependencies
 
-One `update-dependencies` skill for requested versions, bot-generated PRs and dependency surveys. Start with existing Dependabot PRs: review compatibility, resolve conflicts and dependency-related failures, run the repository's required checks, and report ready to merge, blocked, or needing an owner decision. This requires support for jobs on existing PRs.
-
-Add a batch mode that works through open Dependabot PRs and returns one consolidated report. PR preparation is a separate task from `inspect`; merging remains a separate owner action. Dependency surveys need the answer outcome.
+Extend dependency preparation to requested versions and dependency PRs from other authors. Dependency surveys need the answer outcome. Extend the PR preparation entry point to other kinds of existing PRs with their own scope rules and evals.
 
 ### Jobs from telemetry
 

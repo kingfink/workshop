@@ -43,7 +43,13 @@ from workshop import (
 EVALS_DIR = TOOL_ROOT / "evals"
 EVAL_BRANCH = "workshop/eval"
 EVAL_TOOLS = "Bash,Read,Edit,Write"
-TOOL_CODE = ("workshop.py", "workshop_eval.py", "workshop_inspect.py")  # a change to these selects every case
+TOOL_CODE = (
+    "workshop.py",
+    "workshop_eval.py",
+    "workshop_inspect.py",
+    "workshop_prepare.py",
+    "workshop_prepare_eval.py",
+)
 LOAD = """import duckdb, pathlib, sys
 con = duckdb.connect(sys.argv[1])
 con.execute("create schema raw")
@@ -96,7 +102,7 @@ def select_cases(cases: list[dict], names: list[str], changed: set[str] | None) 
         )
 
     def inputs_changed(case: dict) -> bool:
-        skills = case["skills"] + ([] if case.get("kind") == "inspection" else ["workshop"])
+        skills = case["skills"] + ([] if case.get("kind") in ("inspection", "preparation") else ["workshop"])
         inputs = {
             f"evals/cases/{case['name']}.toml",
             *TOOL_CODE,
@@ -276,7 +282,7 @@ def route_cases(cases: list[dict], runs_dir: Path, args: argparse.Namespace) -> 
     or else its skill."""
     skills, rows, spent = job_skills(), [], 0.0
     for case in cases:
-        if case.get("kind") == "inspection":
+        if case.get("kind") in ("inspection", "preparation"):
             continue
         expected, chosen = case.get("route", case["skills"][0]), []
         for number in range(1, args.runs + 1):
@@ -532,15 +538,20 @@ def cmd_eval(args: argparse.Namespace) -> int:
                     }
                 )
                 continue
-            if case.get("kind") != "inspection" and case["fixture"] not in fixtures:
+            if case.get("kind") not in ("inspection", "preparation") and case["fixture"] not in fixtures:
                 fixtures[case["fixture"]] = prepare_fixture(case["fixture"], home / "evals" / case["fixture"])
             status(f"{case['name']}: run {number} of {args.runs}")
             run_dir = runs_dir / f"{case['name']}-{number}"
-            result = (
-                eval_inspection(case, run_dir, args, share)
-                if case.get("kind") == "inspection"
-                else eval_case(case, fixtures[case["fixture"]], run_dir, args, share)
-            )
+            if case.get("kind") == "preparation":
+                from workshop_prepare_eval import eval_preparation
+
+                result = eval_preparation(case, run_dir, args, share)
+            else:
+                result = (
+                    eval_inspection(case, run_dir, args, share)
+                    if case.get("kind") == "inspection"
+                    else eval_case(case, fixtures[case["fixture"]], run_dir, args, share)
+                )
             status(f"{case['name']}: {'passed' if result['passed'] else 'failed'}: {result['why']}")
             spent += result["cost_usd"]
             save_record(result, home / "logs" / "evals.jsonl")

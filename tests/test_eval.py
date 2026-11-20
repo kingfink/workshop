@@ -16,6 +16,11 @@ def test_eval_cases_are_valid():
         if case.get("kind") == "inspection":
             assert case["expect"] in ("ok-after-review", "action-required", "unable-to-assess")
             assert case["observations"]["functions"] and case["criterion"]
+        elif case.get("kind") == "preparation":
+            assert case["expect"] in ("ready", "blocked", "needs-info")
+            assert case["skills"] == ["update-dependencies"] and case["criterion"]
+            if case.get("phase") == "assessment":
+                assert case["evidence"]
         else:
             assert case["expect"] in ("pull-request", "question")
             assert case["issue"]["title"] and case["issue"]["body"]
@@ -232,7 +237,7 @@ def test_eval_rejects_unknown_cases(tmp_path, monkeypatch, capsys, options):
             lambda case: case["fixture"] == "scheduled-build",
         ),
         ({"skills/remove-fields/SKILL.md"}, lambda case: "remove-fields" in case["skills"]),
-        ({"skills/workshop/SKILL.md"}, lambda case: case.get("kind") != "inspection"),
+        ({"skills/workshop/SKILL.md"}, lambda case: case.get("kind") not in ("inspection", "preparation")),
         ({"workshop_inspect.py"}, lambda case: True),
     ],
     ids=["other files", "case file", "fixture", "skill", "workshop skill", "tool code"],
@@ -366,8 +371,12 @@ def test_eval_route_checks_that_each_case_goes_to_its_skill(tmp_path, monkeypatc
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)
     assert workshop.main(["eval", "--route"]) == 0
-    cases = [case for case in workshop_eval.load_cases(None) if case.get("kind") != "inspection"]
-    # one each, in order; inspection cases have no issue
+    cases = [
+        case
+        for case in workshop_eval.load_cases(None)
+        if case.get("kind") not in ("inspection", "preparation")
+    ]
+    # one each, in order; inspection and preparation cases have no issue
     assert all(
         json.dumps(case["issue"]["title"]) in prompt for case, prompt in zip(cases, prompts, strict=True)
     )
