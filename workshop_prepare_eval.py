@@ -96,6 +96,7 @@ def eval_preparation(case: dict, run_dir: Path, args, budget: float) -> dict:
                 "request": case.get("request", {}),
                 "feedback": case.get("feedback", []),
                 "checks": [],
+                "merge_conflicts": bool(case.get("conflict")),
                 "diff": w.git("-C", clone, "diff", f"main...{EVAL_BRANCH}").stdout,
             }
             code = job.run_agent(p.repair_prompt(job, evidence, "Review this PR and prepare it."))
