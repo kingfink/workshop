@@ -286,6 +286,7 @@ class Job:
     agent_args: list[str] = field(
         default_factory=list
     )  # more for the agent's command line, such as a spending cap
+    budget: float = 0.0  # API-equivalent dollars for all of this run's agent invocations; 0 for no cap
     validation: dict = field(
         default_factory=lambda: {
             "source": "github-checks",
@@ -438,8 +439,14 @@ def claude_command(job: Job) -> list[str]:
         "stream-json",
         "--verbose",
         *(["--tools", "Read,Glob,Grep,Write"] if job.inspection else []),
+        *(["--max-budget-usd", f"{max(budget_left(job), 0.01):.2f}"] if job.budget else []),
         *job.agent_args,
     ]
+
+
+def budget_left(job: Job) -> float:
+    """What the agent may still spend this run. A timed-out invocation reports no cost, so it is not counted."""
+    return job.budget - agent_usage(job.log_path)["cost_usd"]
 
 
 def invoke_agent(job: Job, prompt: str) -> int:
@@ -774,7 +781,12 @@ def determine_outcome(job: Job, code: int) -> Outcome:
         return prove(job, pr)
     # The log stays on this machine: it can hold anything a command printed, and the issue may be public.
     log = Path("~") / job.log_path.relative_to(Path.home())
-    ended = f"timed out after {job.args.agent_timeout}s" if code == 124 else f"exited with code {code}"
+    if code == 124:
+        ended = f"timed out after {job.args.agent_timeout}s"
+    elif job.budget and budget_left(job) <= 0:
+        ended = f"spent the run's budget of ${job.budget:.2f}"
+    else:
+        ended = f"exited with code {code}"
     return Outcome(
         "escalated", f"the agent {ended} without leaving a question or a pull request; its log is {log}"
     )
@@ -822,6 +834,13 @@ def prove(job: Job, pr: dict) -> Outcome:
             return Outcome(
                 "escalated",
                 f"checks still failing after {attempts} fix attempts: {', '.join(names)}",
+                pr["url"],
+                attempts,
+            )
+        if job.budget and budget_left(job) <= 0:
+            return Outcome(
+                "escalated",
+                f"the run's budget of ${job.budget:.2f} is spent, and checks are still failing: {', '.join(names)}",
                 pr["url"],
                 attempts,
             )
@@ -923,6 +942,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     job = Job(
         repo, issue, skills, branch, base, clone, repo_settings(repo, base), worktree, handoff, log_path, args
     )
+    job.budget = args.budget
 
     outcome, record, posted, started = None, None, False, time.monotonic()
     try:
@@ -1094,6 +1114,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-fix-attempts", type=int, default=2)
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     run.add_argument("--checks-timeout", type=int, default=300, help="seconds to wait for checks each round")
+    run.add_argument("--budget", type=float, default=10.0, help="API-equivalent dollars for this run's agent")
     init = sub.add_parser("init", help="create the workshop labels in a target repo")
     init.add_argument("repo", metavar="OWNER/REPO")
     score = sub.add_parser("score", help="how a target repo's jobs ended, by skill")
