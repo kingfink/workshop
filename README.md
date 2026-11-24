@@ -66,7 +66,7 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 
 | Option | Default | |
 |---|---|---|
-| `--skills` | chosen | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own `.workshop/skills/<name>/SKILL.md`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`. A skill that only the target repo has is used only when named here. |
+| `--skills` | chosen | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own skill in `.agents/skills/<name>/` or `.claude/skills/<name>/`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`; the `.agents` copy wins if both exist. A copy that `gh skill` installed from workshop's own repository is ignored, so workshop's skills always run as this repository has them. To use them in Claude Code or Codex directly, install them at user scope: `gh skill install <this repo> --all --scope user`. A skill that only the target repo has is used only when named here. |
 | `--max-fix-attempts` | `2` | How many times the agent is sent back to fix failing checks. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
@@ -88,7 +88,7 @@ Before editing, every job's agent decides what done is and finds a check that sh
 
 The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. It checks intended behavior and trusted review feedback, merges the base when making a repair or resolving a conflict, and verifies GitHub checks. Clean PRs get no commits. When GitHub reports a branch is out of date, the report asks the owner to update it.
 
-The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with `.workshop/skills/prepare-pr/SKILL.md` on its default branch.
+The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with its own `.agents/skills/prepare-pr/` or `.claude/skills/prepare-pr/` on its default branch.
 
 If the PR's commits, base, eligibility, title, description or trusted feedback change outside this run, preparation stops for that PR. Rerun to reassess it. Pushes refuse concurrent branch changes; only one `prepare` run per repo can run on a machine.
 

@@ -15,7 +15,6 @@ from pathlib import Path
 
 from workshop import (
     FAILED_LOG_CHARS,
-    REPO_SKILLS,
     SMALL_MODEL,
     TOOL_ROOT,
     Job,
@@ -404,7 +403,7 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
     job = Job(
         f"evals/{fixture.name}",
         1,
-        find_skills(case["skills"], clone / REPO_SKILLS),
+        find_skills(case["skills"], {}),
         EVAL_BRANCH,
         "main",
         clone,

@@ -11,7 +11,7 @@ def test_eval_cases_are_valid():
     cases = workshop_eval.load_cases(None)
     assert cases
     for case in cases:
-        assert workshop.find_skills(case["skills"], workshop_eval.EVALS_DIR)  # the tool's own skills
+        assert workshop.find_skills(case["skills"], {})  # the tool's own skills
         assert (workshop_eval.EVALS_DIR / "fixtures" / case["fixture"] / "repo").is_dir()
         if case.get("kind") == "inspection":
             assert case["expect"] in ("ok-after-review", "action-required", "unable-to-assess")

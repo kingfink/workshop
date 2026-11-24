@@ -3,6 +3,7 @@
 
 import argparse
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,7 +23,11 @@ from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parent
 SKILLS_DIR = TOOL_ROOT / "skills"
-REPO_SKILLS = Path(".workshop/skills")  # a target repo's own skills, read from its default branch
+REPO_SKILL_DIRS = (
+    ".agents/skills",
+    ".claude/skills",
+)  # a target repo's own skills, on its default branch; the first wins
+SKILL_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 LABELS = {  # name: (color, description)
     "workshop:queued": ("5319e7", "Ready for a run. Applied by the owner."),
@@ -143,28 +149,56 @@ def parse_skills(value: str) -> list[str]:
     for name in names:
         if name == "workshop":
             raise ToolError("the workshop skill is always included; do not list it in --skills")
-        if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name):
+        if not SKILL_NAME.fullmatch(name):
             raise ToolError(f"bad skill name {name!r}: use lowercase letters, digits and hyphens")
     return names
 
 
-def find_skills(names: list[str], repo_skills: Path) -> list[Path]:
+def find_skills(names: list[str], repo_skills: dict[str, Path]) -> list[Path]:
     """The SKILL.md of the workshop skill, then of each job skill.
 
-    A skill in `repo_skills`, the target repo's own, replaces the tool's skill of the same name. The workshop skill
-    is always the tool's.
+    A skill in `repo_skills`, the target repo's own by name, replaces the tool's skill of the same name. The
+    workshop skill is always the tool's.
     """
     found = [SKILLS_DIR / "workshop" / "SKILL.md"]
     for name in names:
-        candidates = [repo_skills / name / "SKILL.md", SKILLS_DIR / name / "SKILL.md"]
-        path = next((path for path in candidates if path.is_file()), None)
-        if path is None:
+        path = repo_skills.get(name, SKILLS_DIR / name / "SKILL.md")
+        if not path.is_file():
+            theirs = " or ".join(f"{directory}/{name}/" for directory in REPO_SKILL_DIRS)
             raise ToolError(
-                f"unknown skill {name!r}: neither the target repo's {REPO_SKILLS / name / 'SKILL.md'} "
-                f"nor workshop's skills/{name}/SKILL.md exists"
+                f"unknown skill {name!r}: neither the target repo's {theirs} nor workshop's skills/{name}/"
             )
         found.append(path)
     return found
+
+
+def repo_slug(url: str) -> str:
+    """The lowercase `owner/repo` of a GitHub URL, such as https://github.com/Owner/Repo.git or
+    git@github.com:owner/repo, or "" if it is not one."""
+    found = re.fullmatch(
+        r"(?:(?:https?|ssh)://(?:[^@/]+@)?github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?/?",
+        url.strip(),
+    )
+    return found[1].lower() if found else ""
+
+
+def skill_source(text: str) -> str:
+    """The repository a SKILL.md was installed from, as `gh skill` records it in the frontmatter's
+    `metadata: github-repo:`, or "" if it records none."""
+    frontmatter = text.split("\n---", 1)[0]
+    metadata = re.search(r"^metadata:[ \t]*\n((?:[ \t]+.*(?:\n|$))*)", frontmatter, re.M)
+    found = metadata and re.search(r"^[ \t]+github-repo:[ \t]*['\"]?([^'\"\s]*)", metadata[1], re.M)
+    return repo_slug(found[1]) if found else ""
+
+
+@functools.cache
+def own_repo() -> str:
+    """This tool's repository on GitHub, as `skill_source` gives it, or "" if git cannot tell."""
+    try:
+        result = git("-C", TOOL_ROOT, "remote", "get-url", "origin", check=False)
+    except ToolError:  # git is not installed
+        return ""
+    return repo_slug(result.stdout) if result.returncode == 0 else ""
 
 
 def skill_description(path: Path) -> str:
@@ -228,7 +262,7 @@ def github_file(repo: str, commit: str, path: str) -> str | None:
         "api",
         "-H",
         "Accept: application/vnd.github.raw",
-        f"repos/{repo}/contents/{path}?ref={commit}",
+        f"repos/{repo}/contents/{urllib.parse.quote(path)}?ref={commit}",
         check=False,
     )
     if result.returncode == 0:
@@ -238,14 +272,50 @@ def github_file(repo: str, commit: str, path: str) -> str | None:
     raise ToolError(f"could not read {path} in {repo} from GitHub: {result.stderr.strip()}")
 
 
-def copy_repo_skills(repo: str, commit: str, names: list[str], into: Path) -> None:
-    """Copy the target repo's own SKILL.md for each named skill that has one, as it is on GitHub at `commit`."""
+def copy_repo_skills(repo: str, commit: str, into: Path) -> dict[str, Path]:
+    """Copy the target repo's own skills into `into`, as they are on GitHub at `commit`, and return each one's
+    SKILL.md by name.
+
+    A skill is a folder with a SKILL.md in one of REPO_SKILL_DIRS, and the first of those wins. Only plain files are
+    copied: a link could point anywhere. A copy that `gh skill` installed from this tool's own repository is
+    skipped, so workshop's own skills always run as this tool has them.
+    """
     shutil.rmtree(into, ignore_errors=True)
-    for name in names:
-        text = github_file(repo, commit, f"{REPO_SKILLS}/{name}/SKILL.md")
-        if text is not None:
-            (into / name).mkdir(parents=True)
-            (into / name / "SKILL.md").write_text(text, encoding="utf-8")
+    listing = gh_json("api", f"repos/{repo}/git/trees/{commit}?recursive=1")
+    if listing.get("truncated"):
+        raise ToolError(
+            f"GitHub cannot list all the files of {repo} at {commit}, so its skills cannot be read"
+        )
+    folders: dict[str, tuple[str, list[str]]] = {}  # name: (the folder it is in, its files)
+    for directory in REPO_SKILL_DIRS:
+        files: dict[str, list[str]] = {}
+        for entry in listing["tree"]:
+            name, _, file = entry["path"].removeprefix(f"{directory}/").partition("/")
+            if (
+                entry["path"].startswith(f"{directory}/")
+                and entry["type"] == "blob"
+                and entry["mode"] in ("100644", "100755")
+                and SKILL_NAME.fullmatch(name)
+                and file
+            ):
+                files.setdefault(name, []).append(file)
+        for name, found in files.items():
+            if "SKILL.md" in found:
+                folders.setdefault(name, (directory, found))
+    skills = {}
+    for name, (directory, files) in sorted(folders.items()):
+        text = github_file(repo, commit, f"{directory}/{name}/SKILL.md") or ""
+        if (source := skill_source(text)) and source == own_repo():
+            continue
+        for file in files:
+            path = into / name / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                text if file == "SKILL.md" else github_file(repo, commit, f"{directory}/{name}/{file}") or "",
+                encoding="utf-8",
+            )
+        skills[name] = into / name / "SKILL.md"
+    return skills
 
 
 def prepare_worktree(repo: str, branch: str, clone: Path, worktree: Path) -> str:
@@ -1173,8 +1243,7 @@ def work(repo: str, issue: int, names: list[str] | None, args: argparse.Namespac
         status("choosing a skill")
         names = [route(job, issue_to_route(repo, issue, info["comments"]), job_skills())]
         status(f"chose {names[0]}")
-    repo_skills = home / "logs" / name / "skills"  # this run's copy of the target repo's own
-    copy_repo_skills(repo, base, names, repo_skills)
+    repo_skills = copy_repo_skills(repo, base, home / "logs" / name / "skills")  # this run's copy
     job.skills = find_skills(names, repo_skills)
 
     outcome, record, posted, started = None, None, False, time.monotonic()

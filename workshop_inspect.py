@@ -347,7 +347,7 @@ def inspection_prompt(job: Job) -> str:
                 f"Repository checkout: {job.worktree}. Confine repository searches to this path.",
                 f"Read the evidence in {job.log_path.parent / 'evidence.json'}.",
                 "Read the repository's AGENTS.md if present, and relevant code and documentation.",
-                f"Repair skills are in {SKILLS_DIR} and .workshop/skills/ in the checkout.",
+                f"Repair skills are in {SKILLS_DIR} and in the checkout's .agents/skills/ and .claude/skills/.",
                 "Read a repair skill's scope before recommending it; do not perform the repair.",
                 *(
                     [

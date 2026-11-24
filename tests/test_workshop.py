@@ -84,20 +84,77 @@ def test_agent_gets_no_secrets(fake, monkeypatch):
     assert agent["env_file"] == "export DBT_TARGET='dev it'\n"  # the target repo's env reaches only commands
 
 
+def skill(name: str, source: str = "") -> str:
+    metadata = f"metadata:\n    github-repo: {source}\n" if source else ""
+    return f"---\ndescription: The repo's {name}.\n{metadata}name: {name}\n---\n"
+
+
 def test_target_repo_skills(fake):
-    skill = "---\nname: from-the-repo\n---\n"
-    names = ("workshop", "add-fields", "triage")
-    fake.set(default_branch_files={f".workshop/skills/{name}/SKILL.md": skill for name in names})
+    fake.set(
+        default_branch_files={
+            ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
+            ".agents/skills/add-fields/reference.md": "ref",
+            ".claude/skills/add-fields/SKILL.md": "loses to .agents",
+            ".claude/skills/triage/SKILL.md": skill("triage"),
+            ".agents/skills/workshop/SKILL.md": skill("workshop"),
+            ".workshop/skills/remove-fields/SKILL.md": skill("remove-fields"),
+        }
+    )
     assert fake.outcome("run", "acme/analytics#12", "--skills", "add-fields,triage") == "pr-open"
     [agent] = fake.state["agent_runs"]
-    repo_skills = (
-        fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
-    )  # this run's copy from GitHub
-    assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]  # never the repo's
-    assert f"{repo_skills / 'add-fields' / 'SKILL.md'}\n" in agent["prompt"]  # the repo's replaces the tool's
-    assert str(workshop.SKILLS_DIR / "add-fields") not in agent["prompt"]
-    assert f"{repo_skills / 'triage' / 'SKILL.md'}\n" in agent["prompt"]
-    assert (repo_skills / "triage" / "SKILL.md").read_text() == skill
+    copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
+    assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]
+    assert f"{copies / 'add-fields' / 'SKILL.md'}\n" in agent["prompt"]
+    assert (copies / "add-fields" / "SKILL.md").read_text() == skill("add-fields")
+    assert (copies / "add-fields" / "reference.md").read_text() == "ref"
+    assert (copies / "triage" / "SKILL.md").read_text() == skill("triage")
+    assert not (copies / "remove-fields").exists()  # .workshop/skills is no longer read
+
+
+@pytest.mark.parametrize(
+    "source, from_repo",
+    [("https://github.com/Acme/workshop", False), ("https://github.com/acme/other-skills", True)],
+)
+def test_a_target_repo_copy_of_workshops_own_skill_is_ignored(fake, monkeypatch, source, from_repo):
+    monkeypatch.setattr(workshop, "own_repo", lambda: "acme/workshop")
+    fake.set(default_branch_files={".agents/skills/add-fields/SKILL.md": skill("add-fields", source)})
+    assert fake.outcome(*RUN) == "pr-open"
+    [agent] = fake.state["agent_runs"]
+    assert (str(workshop.SKILLS_DIR / "add-fields" / "SKILL.md") in agent["prompt"]) is not from_repo
+
+
+def test_links_in_a_skill_folder_are_not_copied(fake):
+    fake.set(
+        default_branch_files={".agents/skills/add-fields/SKILL.md": skill("add-fields")},
+        default_branch_links={".agents/skills/add-fields/secret.md": "/etc/passwd"},
+    )
+    assert fake.outcome(*RUN) == "pr-open"
+    copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
+    assert not (copies / "add-fields" / "secret.md").exists()
+
+
+def test_a_tree_too_large_to_list_changes_no_labels(fake):
+    fake.set(tree_truncated=True)
+    assert fake.run(*RUN) == 1
+    assert fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []
+
+
+@pytest.mark.parametrize(
+    "url, slug",
+    [
+        ("https://github.com/Acme/Workshop.git", "acme/workshop"),
+        ("git@github.com:acme/workshop.git", "acme/workshop"),
+        ("https://github.com/acme/workshop", "acme/workshop"),
+        ("", ""),
+    ],
+)
+def test_repo_slug(url, slug):
+    assert workshop.repo_slug(url) == slug
+
+
+def test_skill_source_reads_what_gh_skill_records():
+    assert workshop.skill_source(skill("other", "https://github.com/acme/workshop")) == "acme/workshop"
+    assert workshop.skill_source(skill("other")) == ""
 
 
 def test_the_workshop_skill_names_no_runner_files():

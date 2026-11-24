@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 STATE = os.environ["FAKE_STATE"]
 BRANCH = "workshop/issue-12"  # the tests always work acme/analytics#12
@@ -53,12 +54,23 @@ def gh(state, args):
                 }
             )
         )
+    elif args[0] == "api" and (
+        tree := re.fullmatch(r"repos/acme/analytics/git/trees/(\w+)\?recursive=1", args[-1])
+    ):
+        if tree[1] != state["default_commit"]:
+            return "gh: Not Found (HTTP 404)"
+        files = [(path, "100644") for path in state.get("default_branch_files", {})]
+        links = [(path, "120000") for path in state.get("default_branch_links", {})]
+        entries = [{"path": path, "mode": mode, "type": "blob"} for path, mode in files + links]
+        print(json.dumps({"tree": entries, "truncated": state.get("tree_truncated", False)}))
     elif (
         args[0] == "api"
     ):  # api -H <accept> repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it
         path, commit = re.fullmatch(r"repos/acme/analytics/contents/(.+)\?ref=(.+)", args[-1]).groups()
         content = (
-            state.get("default_branch_files", {}).get(path) if commit == state["default_commit"] else None
+            state.get("default_branch_files", {}).get(urllib.parse.unquote(path))
+            if commit == state["default_commit"]
+            else None
         )
         if content is None:
             return "gh: Not Found (HTTP 404)"
