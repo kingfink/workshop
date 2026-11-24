@@ -176,11 +176,12 @@ def skill_description(path: Path) -> str:
 
 def job_skills() -> dict[str, str]:
     """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor
-    assess-failure and prepare-pr, which only inspect and prepare use."""
+    assess-failure and prepare-pr, which only inspect and prepare use, nor review-analytics-artifact, which
+    reports findings instead of opening a pull request."""
     return {
         path.parent.name: skill_description(path)
         for path in sorted(SKILLS_DIR.glob("*/SKILL.md"))
-        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr")
+        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr", "review-analytics-artifact")
     }
 
 
