@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.parse
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,7 +41,7 @@ LABELS = {  # name: (color, description)
 PREPARE_LABEL = ("ededed", "Exclude this pull request from workshop prepare.")
 
 TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}  # people with push access
-SMALL_MODEL = "haiku"  # chooses each job's skill, and in evals grades answers
+SMALL_MODEL = "haiku"  # grades answers in evals
 ROUTE_TIMEOUT_S = 120  # seconds for the small model to choose a skill
 
 CHECKS_POLL_S = 10  # seconds between looks at a pull request's checks
@@ -208,14 +209,26 @@ def skill_description(path: Path) -> str:
     return found[1].strip() if found else ""
 
 
+NON_JOB_SKILLS = (
+    "workshop",
+    "assess-failure",
+    "prepare-pr",
+)  # every job has workshop; inspect and prepare the others
+
+
 def job_skills() -> dict[str, str]:
-    """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor
-    assess-failure and prepare-pr, which only inspect and prepare use."""
+    """The tool's job skills by name, with their descriptions."""
     return {
         path.parent.name: skill_description(path)
         for path in sorted(SKILLS_DIR.glob("*/SKILL.md"))
-        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr")
+        if path.parent.name not in NON_JOB_SKILLS
     }
+
+
+def offered_skills(repo_skills: dict[str, Path]) -> list[Path]:
+    """The workshop skill's SKILL.md, then every job skill's by name, the target repo's own included, for the agent
+    to choose from."""
+    return find_skills(sorted((job_skills().keys() | repo_skills.keys()) - set(NON_JOB_SKILLS)), repo_skills)
 
 
 def require_gh_login() -> None:
@@ -389,6 +402,7 @@ class Job:
     )  # more for the agent's command line, such as a spending cap
     evidence_dir: Path | None = None  # additional read-only logs supplied by the tool
     budget: float = 0.0  # API-equivalent dollars for all of this run's agent invocations; 0 for no cap
+    choose: bool = False  # `skills` are offered: the agent reads workshop and chooses the job skills that fit
     validation: dict = field(
         default_factory=lambda: {
             "source": "github-checks",
@@ -655,6 +669,38 @@ TOKENS = {
 }
 
 
+def log_events(log_path: Path) -> Iterator[dict]:
+    """Claude Code's stream-json events in the output sections of the run's log."""
+    in_output = False
+    for line in (
+        log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
+    ):
+        if line.startswith("=== "):  # invoke_agent's markers: only the output sections hold events
+            in_output = line == "=== output:"
+            continue
+        try:
+            event = json.loads(line) if in_output else None
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def skills_read(job: Job) -> list[Path]:
+    """The skills of `job.skills` whose SKILL.md the agent read with its Read tool, as the run's log shows."""
+    read = {
+        Path(block["input"]["file_path"])
+        for event in log_events(job.log_path)
+        if event.get("type") == "assistant"
+        for block in event.get("message", {}).get("content", [])
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == "Read"
+        and isinstance(block.get("input", {}).get("file_path"), str)
+    }
+    return [path for path in job.skills if path in read]
+
+
 def agent_usage(log_path: Path) -> dict:
     """What the agent did in this run's log, from Claude Code's stream-json events. A run that timed out has no cost."""
     usage = {
@@ -667,19 +713,7 @@ def agent_usage(log_path: Path) -> dict:
         "tool_calls": Counter(),
         "denied_tool_calls": Counter(),
     }
-    in_output = False
-    for line in (
-        log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
-    ):
-        if line.startswith("=== "):  # invoke_agent's markers: only the output sections hold events
-            in_output = line == "=== output:"
-            continue
-        try:
-            event = json.loads(line) if in_output else None
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
+    for event in log_events(log_path):
         if event.get("type") == "system" and event.get("subtype") == "init":
             usage["agent_version"], usage["model"] = (
                 event.get("claude_code_version", ""),
@@ -715,9 +749,15 @@ Commands run in a sandbox. They can write only to the working directory, the han
 only the network hosts the repository allows."""
 
 
-def job_lines(job: Job) -> list[str]:
+CHOOSE_RULES = """Next, choose the job skill for the kind of work the issue asks for from the list below, read its \
+SKILL.md and follow it exactly. Also read and follow each other job skill that fits. Choose by the kind of work, even \
+when that skill's scope rules exclude this request; then follow those rules, which means asking. Choose other only if \
+no job skill is for that kind of work."""
+
+
+def job_lines(job: Job, skills: list[Path]) -> list[str]:
     return [
-        *(f"  {path}" for path in job.skills),
+        *(f"  {path}" for path in skills),
         f"Target repository: {job.repo}. Issue: #{job.issue}. Branch: {job.branch}.",
         f"Handoff directory: {job.handoff}",
     ]
@@ -729,11 +769,28 @@ def initial_prompt(job: Job, issue: str = "") -> str:
     return (
         "\n".join(
             [
-                "You are working a job in a workshop. Read these files first and follow them exactly:",
-                *job_lines(job),
+                "You are working a job in a workshop. Read "
+                + (
+                    "this skill first and follow it exactly:"
+                    if job.choose
+                    else "these files first and follow them exactly:"
+                ),
+                *job_lines(job, job.skills[:1] if job.choose else job.skills),
                 f"{read}. This job has no github tools: the issue with all its comments is below."
                 if issue
                 else f"{read}, and the issue with all its comments.",
+                *(
+                    [
+                        "",
+                        CHOOSE_RULES,
+                        *(
+                            f"  - {path.parent.name}: {skill_description(path)}\n    {path}"
+                            for path in job.skills[1:]
+                        ),
+                    ]
+                    if job.choose
+                    else []
+                ),
                 "",
                 HANDOFF_RULES,
                 *(["", "The issue with all its comments:", "", issue] if issue else []),
@@ -744,11 +801,12 @@ def initial_prompt(job: Job, issue: str = "") -> str:
 
 
 def fix_prompt(job: Job, pr: int | None, failing: list[str], logs: str) -> str:
+    read = skills_read(job) if job.choose else []
     return (
         "\n".join(
             [
                 f"{f'Pull request #{pr} has' if pr else 'Your change has'} failing checks. Read the same skill files again:",
-                *job_lines(job),
+                *job_lines(job, read or job.skills),
                 f"Failing checks: {', '.join(failing)}",
                 "Logs:",
                 logs,
@@ -1071,7 +1129,7 @@ def prove(job: Job, pr: dict) -> Outcome:
 
 def summary(outcome: Outcome, job: Job, record: dict) -> str:
     lines = [f"**workshop: {outcome.name}**: {outcome.reason}.", ""]
-    lines.append(f"- Skills: {', '.join(path.parent.name for path in job.skills[1:])}.")
+    lines.append(f"- Skills: {skill_label(record['skills'])}.")
     if outcome.pr_url:
         lines += [
             f"- Pull request: {outcome.pr_url}",
@@ -1101,6 +1159,11 @@ def summary(outcome: Outcome, job: Job, record: dict) -> str:
 # --- telemetry: one record per run, in ~/.workshop/logs/runs.jsonl and hidden in the run's issue comment
 
 
+def skill_label(skills: list[dict]) -> str:
+    """The job skills a run record lists, without workshop, which every job has: "add-fields", or "none"."""
+    return ", ".join(skill["name"] for skill in skills if skill["name"] != "workshop") or "none"
+
+
 def skill_records(paths: list[Path]) -> list[dict]:
     return [
         {
@@ -1117,7 +1180,7 @@ def run_record(job: Job, outcome: Outcome | None, error: str, total_s: float) ->
         "finished": timestamp(),
         "repo": job.repo,
         "issue": job.issue,
-        "skills": skill_records(job.skills),
+        "skills": skill_records(skills_read(job)),
         "outcome": outcome.name if outcome else "error",
         "reason": outcome.reason if outcome else error,
         "fix_attempts": outcome.fix_attempts if outcome else 0,
@@ -1179,22 +1242,6 @@ def runnable_issues(repo: str) -> list[int]:
     return sorted(numbers)
 
 
-def issue_to_route(repo: str, issue: int, comments: list[dict]) -> dict:
-    """The issue's title, body and comments, with only what people with push access wrote, as the agent's
-    lockdown-mode GitHub server shows it. Run records are left out of the tool's own comments."""
-    info = gh_json("api", f"repos/{repo}/issues/{issue}")
-    trusted = info["author_association"] in TRUSTED_AUTHORS
-    return {
-        "title": info["title"] if trusted else "",
-        "body": (info.get("body") or "") if trusted else "",
-        "comments": [
-            RECORD.sub("", comment["body"]).strip()
-            for comment in comments
-            if comment.get("authorAssociation") in TRUSTED_AUTHORS
-        ],
-    }
-
-
 def cmd_run(args: argparse.Namespace) -> int:
     repo, issue = parse_run_ref(args.ref)
     names = parse_skills(args.skills) if args.skills else None
@@ -1239,12 +1286,9 @@ def work(repo: str, issue: int, names: list[str] | None, args: argparse.Namespac
         repo, issue, [], branch, base, clone, repo_settings(repo, base), worktree, handoff, log_path, args
     )
     job.budget = args.budget
-    if names is None:
-        status("choosing a skill")
-        names = [route(job, issue_to_route(repo, issue, info["comments"]), job_skills())]
-        status(f"chose {names[0]}")
     repo_skills = copy_repo_skills(repo, base, home / "logs" / name / "skills")  # this run's copy
-    job.skills = find_skills(names, repo_skills)
+    job.choose = names is None
+    job.skills = offered_skills(repo_skills) if job.choose else find_skills(names, repo_skills)
 
     outcome, record, posted, started = None, None, False, time.monotonic()
     try:
@@ -1331,7 +1375,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     require_gh_login()
     rows: dict[str, Counter] = {}
     for runs in job_records(args.repo, args.since):
-        skills = ", ".join(skill["name"] for skill in runs[-1]["skills"][1:])  # the first is always workshop
+        skills = skill_label(runs[-1]["skills"])
         if kind := next((run["kind"] for run in reversed(runs) if run.get("kind")), ""):
             skills += f": {kind}"
         row = rows.setdefault(skills, Counter())
@@ -1418,7 +1462,7 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="work one issue, or each one ready in a repo")
     run.add_argument("ref", metavar="OWNER/REPO[#ISSUE]")
     run.add_argument(
-        "--skills", help="comma-separated, e.g. add-fields; by default one is chosen for each issue"
+        "--skills", help="comma-separated, e.g. add-fields; by default the agent chooses from every job skill"
     )
     run.add_argument("--max-fix-attempts", type=int, default=2)
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")

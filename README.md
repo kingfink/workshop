@@ -60,17 +60,17 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 It clones the issue's repo under `~/.workshop/` and works there, so it can be run from any directory.
 
-Unless `--skills` names them, each run starts by choosing one job skill. A small model with no tools gets the issue and its comments, only what people with push access wrote, and each job skill's name and description. It chooses by the kind of work the issue asks for, or `other` if no skill is for it. The skill's own scope rules then decide whether the job goes ahead or asks. The run's comment names the skills it used.
+Unless `--skills` names them, the agent chooses its job skills. Its prompt gives every job skill's name, description and path, the target repo's own included, and it chooses by the kind of work the issue asks for, or `other` if no skill is for it. The skill's own scope rules then decide whether the job goes ahead or asks. The run's comment names the job skills the agent read, or `none`.
 
 The agent runs at `medium` effort. Each invocation's prompt includes its deadline, set by `--agent-timeout`.
 
 | Option | Default | |
 |---|---|---|
-| `--skills` | chosen | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own skill in `.agents/skills/<name>/` or `.claude/skills/<name>/`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`; the `.agents` copy wins if both exist. A copy that `gh skill` installed from workshop's own repository is ignored, so workshop's skills always run as this repository has them. To use them in Claude Code or Codex directly, install them at user scope: `gh skill install <this repo> --all --scope user`. A skill that only the target repo has is used only when named here. |
+| `--skills` | the agent chooses | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own skill in `.agents/skills/<name>/` or `.claude/skills/<name>/`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`; the `.agents` copy wins if both exist. A copy that `gh skill` installed from workshop's own repository is ignored, so workshop's skills always run as this repository has them. To use them in Claude Code or Codex directly, install them at user scope: `gh skill install <this repo> --all --scope user`. |
 | `--max-fix-attempts` | `2` | How many times the agent is sent back to fix failing checks. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
-| `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, choosing the skill and fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
+| `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
 
 Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 
@@ -184,7 +184,6 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - For `prepare`, the tool supplies diffs, checks and failed logs. Only PRs from people with push access or the GitHub Dependabot account supply a diff. Titles, descriptions and feedback come from people with push access. The agent has no GitHub tools.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
-- To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -222,7 +221,7 @@ Let a job end in a comment on the issue with no pull request, beside a question 
 
 ### Triage and follow-up issues
 
-Review issues, and flag missing information, prerequisites or work to split into separate issues. Choose several compatible skills for one change where one is not enough. The owner still chooses which issues to queue.
+Review issues, and flag missing information, prerequisites or work to split into separate issues. The owner still chooses which issues to queue.
 
 At the end of a job, let the agent hand off follow-up work for workshop to create as linked issues in the same or another relevant repository. Include the reason, a way to verify completion, suggested skills and any dependency on the original change. Reuse existing issues on reruns, and send follow-ups through triage before the owner queues them. Follow-ups that depend on the original change wait until that prerequisite is satisfied.
 
