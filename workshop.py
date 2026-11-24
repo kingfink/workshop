@@ -22,6 +22,9 @@ from pathlib import Path
 TOOL_ROOT = Path(__file__).resolve().parent
 SKILLS_DIR = TOOL_ROOT / "skills"
 REPO_SKILLS = Path(".workshop/skills")  # a target repo's own skills, read from its default branch
+# skills issue runs never use: inspect uses assess-failure, prepare uses prepare-pr, and review-analytics-artifact
+# reports findings instead of opening a pull request
+NOT_ISSUE_SKILLS = ("assess-failure", "prepare-pr", "review-analytics-artifact")
 
 LABELS = {  # name: (color, description)
     "workshop:queued": ("5319e7", "Ready for a run. Applied by the owner."),
@@ -175,13 +178,12 @@ def skill_description(path: Path) -> str:
 
 
 def job_skills() -> dict[str, str]:
-    """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor
-    assess-failure and prepare-pr, which only inspect and prepare use, nor review-analytics-artifact, which
-    reports findings instead of opening a pull request."""
+    """The tool's job skills by name, with their descriptions. Not workshop, which every job has, nor those in
+    NOT_ISSUE_SKILLS."""
     return {
         path.parent.name: skill_description(path)
         for path in sorted(SKILLS_DIR.glob("*/SKILL.md"))
-        if path.parent.name not in ("workshop", "assess-failure", "prepare-pr", "review-analytics-artifact")
+        if path.parent.name not in ("workshop", *NOT_ISSUE_SKILLS)
     }
 
 
@@ -1109,8 +1111,9 @@ def issue_to_route(repo: str, issue: int, comments: list[dict]) -> dict:
 def cmd_run(args: argparse.Namespace) -> int:
     repo, issue = parse_run_ref(args.ref)
     names = parse_skills(args.skills) if args.skills else None
-    if names and "prepare-pr" in names:
-        raise ToolError("prepare-pr is used by prepare, not issue runs")
+    for name in names or []:
+        if name in NOT_ISSUE_SKILLS:
+            raise ToolError(f"{name} is not used by issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
     require_gh_login()

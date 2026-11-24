@@ -11,7 +11,7 @@ Review the named analytical content and return findings with evidence. Do not re
 
 - If the request does not name the content to review, or you cannot open what it names with the tools you have, stop and say what you need. If it names no version, review the published content, or the default branch for content defined in the repository, and record which.
 - Take business definitions and inspection methods from the request, `AGENTS.md` and the repository's skills. Do not require a semantic layer when the repository establishes definitions another way.
-- Check the figures, claims and controls the request names. If it names none, check the figures that the title, headline or summary text relies on.
+- List the content's pages, figures and controls. Check what the request names. If it names nothing, check the figures the title, headline or summary relies on and the controls that change them. Put what you listed but did not check in `gaps`.
 - Check that each metric, population and comparison the request asks for is present, or labeled unavailable or out of scope.
 - When the purpose or meaning of a figure is unresolved, name the decision needed and continue the checks that do not depend on it.
 - Do not combine evidence from two versions, such as a published page and a commit, unless you show they compute the figure the same way.
@@ -43,7 +43,7 @@ Review the named analytical content and return findings with evidence. Do not re
 ## Execution and private data
 
 - Run queries only with the tools and credentials you were given. Aggregate in the query instead of fetching rows, and put a row limit on exploratory queries.
-- Do not run notebook or app code that writes data, sends messages or calls outside services, unless it runs against a fixture the repository names for that purpose. Report code whose effects you cannot establish as unverified instead of running it.
+- Notebook or app code may call outside services only through the credentials you were given, and only to read. Do not run code that writes data, sends messages or changes anything outside the run, unless it runs against a fixture the repository names for that purpose. Report code whose effects you cannot establish as unverified instead of running it.
 - Do not print row-level records. Keep private figures, query results, credentials and identifiers from the data out of public files, issues and pull requests. Describe a discrepancy without copying private values.
 
 ## Report

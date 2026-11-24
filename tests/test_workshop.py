@@ -23,6 +23,13 @@ def test_bad_arguments_exit_1():
     assert workshop.main(["run", "acme/analytics#12", "--skills", "workshop"]) == 1
 
 
+@pytest.mark.parametrize("name", workshop.NOT_ISSUE_SKILLS)
+def test_an_issue_run_rejects_skills_it_does_not_use(fake, name):
+    assert name not in workshop.job_skills()
+    assert fake.run("run", "acme/analytics#12", "--skills", f"add-fields,{name}") == 1
+    assert not fake.calls("gh")
+
+
 def test_claude_command_confines_the_agent(fake):
     def flag(cmd, name):
         return cmd[cmd.index(name) + 1]
