@@ -2,6 +2,7 @@
 """workshop: have a coding agent work a labelled GitHub issue into a pull request."""
 
 import argparse
+import base64
 import functools
 import hashlib
 import json
@@ -283,48 +284,71 @@ def github_file(repo: str, commit: str, path: str) -> str | None:
     raise ToolError(f"could not read {path} in {repo} from GitHub: {result.stderr.strip()}")
 
 
+def skill_folder(repo: str, commit: str, directory: str) -> list[dict]:
+    """The files under `directory`, such as .agents/skills, in the target repo at `commit`, as GitHub's trees API
+    lists them with paths relative to it, or [] if it has no such folder.
+
+    Only this folder is listed: the tree of a whole repository can be too large for GitHub to list.
+    """
+    parent, _, name = directory.rpartition("/")
+    result = gh("api", f"repos/{repo}/contents/{urllib.parse.quote(parent)}?ref={commit}", check=False)
+    if result.returncode != 0:
+        if "HTTP 404" in result.stderr:
+            return []
+        raise ToolError(f"could not list {parent} in {repo} from GitHub: {result.stderr.strip()}")
+    entries = json.loads(result.stdout)
+    found = (
+        [e["sha"] for e in entries if e["name"] == name and e["type"] == "dir"]
+        if isinstance(entries, list)
+        else []
+    )
+    if not found:
+        return []
+    tree = gh_json("api", f"repos/{repo}/git/trees/{found[0]}?recursive=1")
+    if tree.get("truncated"):
+        raise ToolError(f"GitHub cannot list all the files in {directory} of {repo} at {commit}")
+    return tree["tree"]
+
+
+def github_blob(repo: str, sha: str) -> bytes:
+    """A file's exact bytes from GitHub, by its git object id."""
+    return base64.b64decode(gh_json("api", f"repos/{repo}/git/blobs/{sha}")["content"])
+
+
 def copy_repo_skills(repo: str, commit: str, into: Path) -> dict[str, Path]:
     """Copy the target repo's own skills into `into`, as they are on GitHub at `commit`, and return each one's
     SKILL.md by name.
 
-    A skill is a folder with a SKILL.md in one of REPO_SKILL_DIRS, and the first of those wins. Only plain files are
-    copied: a link could point anywhere. A copy that `gh skill` installed from this tool's own repository is
-    skipped, so workshop's own skills always run as this tool has them.
+    A skill is a folder with a SKILL.md in one of REPO_SKILL_DIRS, and the first of those wins. Only plain files
+    inside the folder are copied: a link could point anywhere. A copy that `gh skill` installed from this tool's own
+    repository is skipped, so workshop's own skills always run as this tool has them.
     """
     shutil.rmtree(into, ignore_errors=True)
-    listing = gh_json("api", f"repos/{repo}/git/trees/{commit}?recursive=1")
-    if listing.get("truncated"):
-        raise ToolError(
-            f"GitHub cannot list all the files of {repo} at {commit}, so its skills cannot be read"
-        )
-    folders: dict[str, tuple[str, list[str]]] = {}  # name: (the folder it is in, its files)
+    folders: dict[str, dict[str, dict]] = {}  # name: {path in the folder: its tree entry}
     for directory in REPO_SKILL_DIRS:
-        files: dict[str, list[str]] = {}
-        for entry in listing["tree"]:
-            name, _, file = entry["path"].removeprefix(f"{directory}/").partition("/")
+        files: dict[str, dict[str, dict]] = {}
+        for entry in skill_folder(repo, commit, directory):
+            name, _, file = entry["path"].partition("/")
             if (
-                entry["path"].startswith(f"{directory}/")
-                and entry["type"] == "blob"
+                entry["type"] == "blob"
                 and entry["mode"] in ("100644", "100755")
                 and SKILL_NAME.fullmatch(name)
-                and file
+                and not {"", ".", ".."} & set(file.split("/"))
             ):
-                files.setdefault(name, []).append(file)
+                files.setdefault(name, {})[file] = entry
         for name, found in files.items():
             if "SKILL.md" in found:
-                folders.setdefault(name, (directory, found))
+                folders.setdefault(name, found)
     skills = {}
-    for name, (directory, files) in sorted(folders.items()):
-        text = github_file(repo, commit, f"{directory}/{name}/SKILL.md") or ""
-        if (source := skill_source(text)) and source == own_repo():
+    for name, files in sorted(folders.items()):
+        text = github_blob(repo, files["SKILL.md"]["sha"])
+        if (source := skill_source(text.decode("utf-8", "replace"))) and source == own_repo():
             continue
-        for file in files:
+        for file, entry in files.items():
             path = into / name / file
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                text if file == "SKILL.md" else github_file(repo, commit, f"{directory}/{name}/{file}") or "",
-                encoding="utf-8",
-            )
+            path.write_bytes(text if file == "SKILL.md" else github_blob(repo, entry["sha"]))
+            path.chmod(0o755 if entry["mode"] == "100755" else 0o644)
         skills[name] = into / name / "SKILL.md"
     return skills
 
@@ -479,6 +503,7 @@ def claude_settings(job: Job) -> dict:
                 "denyRead": ["~/"],
                 "allowRead": [
                     str(job.worktree),
+                    *dict.fromkeys(str(path.parent) for path in job.skills),  # skills that ship scripts
                     str(job.clone / ".git"),
                     str(job.handoff),
                     "~/.gitconfig",

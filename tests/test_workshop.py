@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -133,10 +134,54 @@ def test_links_in_a_skill_folder_are_not_copied(fake):
     assert not (copies / "add-fields" / "secret.md").exists()
 
 
-def test_a_tree_too_large_to_list_changes_no_labels(fake):
-    fake.set(tree_truncated=True)
+def test_a_skill_folder_too_large_to_list_changes_no_labels(fake):
+    fake.set(
+        tree_truncated=True, default_branch_files={".agents/skills/add-fields/SKILL.md": skill("add-fields")}
+    )
     assert fake.run(*RUN) == 1
     assert fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []
+
+
+def test_only_the_skill_folders_are_listed(fake):
+    fake.set(
+        tree_truncated=True, default_branch_files={"models/orders.sql": "select 1"}
+    )  # a repo too large to list
+    assert fake.outcome(*RUN) == "pr-open"
+
+
+def test_skill_files_outside_their_folder_are_not_copied(fake):
+    fake.set(
+        default_branch_files={
+            ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
+            ".agents/skills/add-fields/../../../escaped.txt": "x",
+        }
+    )
+    assert fake.outcome(*RUN) == "pr-open"
+    assert not (fake.home / ".workshop" / "logs" / "escaped.txt").exists()
+
+
+def test_skill_files_are_copied_exactly_and_commands_can_read_them(fake):
+    fake.set(
+        default_branch_files={
+            ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
+            ".agents/skills/add-fields/scripts/check.sh": "#!/bin/sh\r\necho ok\r\n",
+        },
+        default_branch_executables=[".agents/skills/add-fields/scripts/check.sh"],
+    )
+    assert fake.outcome(*RUN) == "pr-open"
+    copy = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills" / "add-fields"
+    script = copy / "scripts" / "check.sh"
+    assert script.read_bytes() == b"#!/bin/sh\r\necho ok\r\n" and os.access(script, os.X_OK)
+
+
+def test_commands_can_read_the_skill_folders(tmp_path):
+    copy = tmp_path / "logs" / "acme-analytics-12" / "skills" / "add-fields"
+    skills = [workshop.SKILLS_DIR / "workshop" / "SKILL.md", copy / "SKILL.md"]
+    job = workshop.Job(
+        "acme/analytics", 12, skills, "b", DEFAULT, tmp_path, {}, tmp_path, tmp_path, tmp_path / "x.log", None
+    )
+    allowed = workshop.claude_settings(job)["sandbox"]["filesystem"]["allowRead"]
+    assert str(copy) in allowed and str(workshop.SKILLS_DIR / "workshop") in allowed
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@
 Usage: fake.py gh|git|agent ARGS...
 """
 
+import base64
 import json
 import os
 import re
@@ -22,6 +23,18 @@ def load():
 def save(state):
     with open(STATE, "w") as f:
         json.dump(state, f)
+
+
+def branch_files(state):
+    """The default branch's files, each path with its content and git mode, as GitHub lists them."""
+    executable = state.get("default_branch_executables", [])
+    return {
+        **{
+            path: (text, "100755" if path in executable else "100644")
+            for path, text in state.get("default_branch_files", {}).items()
+        },
+        **{path: (target, "120000") for path, target in state.get("default_branch_links", {}).items()},
+    }
 
 
 def flag(args, name):
@@ -55,26 +68,49 @@ def gh(state, args):
             )
         )
     elif args[0] == "api" and (
-        tree := re.fullmatch(r"repos/acme/analytics/git/trees/(\w+)\?recursive=1", args[-1])
+        found := re.fullmatch(r"repos/acme/analytics/git/(trees|blobs)/(\w+)(\?recursive=1)?", args[-1])
     ):
-        if tree[1] != state["default_commit"]:
-            return "gh: Not Found (HTTP 404)"
-        files = [(path, "100644") for path in state.get("default_branch_files", {})]
-        links = [(path, "120000") for path in state.get("default_branch_links", {})]
-        entries = [{"path": path, "mode": mode, "type": "blob"} for path, mode in files + links]
+        kind, path = (
+            found[1],
+            bytes.fromhex(found[2]).decode(),
+        )  # the fake's sha of a folder or file is its path
+        files = branch_files(state)
+        if kind == "blobs":
+            print(
+                json.dumps(
+                    {"content": base64.b64encode(files[path][0].encode()).decode(), "encoding": "base64"}
+                )
+            )
+            return 0
+        entries = [
+            {"path": name.removeprefix(f"{path}/"), "mode": mode, "type": "blob", "sha": name.encode().hex()}
+            for name, (_, mode) in files.items()
+            if name.startswith(f"{path}/")
+        ]
         print(json.dumps({"tree": entries, "truncated": state.get("tree_truncated", False)}))
     elif (
         args[0] == "api"
-    ):  # api -H <accept> repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it
-        path, commit = re.fullmatch(r"repos/acme/analytics/contents/(.+)\?ref=(.+)", args[-1]).groups()
-        content = (
-            state.get("default_branch_files", {}).get(urllib.parse.unquote(path))
-            if commit == state["default_commit"]
-            else None
-        )
-        if content is None:
+    ):  # api [-H <accept>] repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it, or a folder's listing
+        path, commit = re.fullmatch(r"repos/acme/analytics/contents/(.*)\?ref=(.+)", args[-1]).groups()
+        path = urllib.parse.unquote(path)
+        if commit != state["default_commit"]:
             return "gh: Not Found (HTTP 404)"
-        sys.stdout.write(content)
+        files = branch_files(state)
+        if path in state.get("default_branch_files", {}):
+            sys.stdout.write(files[path][0])
+            return 0
+        children = {
+            name.removeprefix(f"{path}/").split("/")[0]: name.removeprefix(f"{path}/").count("/") > 0
+            for name in files
+            if name.startswith(f"{path}/")
+        }
+        if not children:
+            return "gh: Not Found (HTTP 404)"
+        listing = [
+            {"name": child, "type": "dir" if folder else "file", "sha": f"{path}/{child}".encode().hex()}
+            for child, folder in children.items()
+        ]
+        print(json.dumps(listing))
     elif command == ["repo", "clone"]:
         os.makedirs(os.path.join(args[3], ".git"))
     elif command == ["label", "create"]:
