@@ -23,6 +23,13 @@ def test_bad_arguments_exit_1():
     assert workshop.main(["run", "acme/analytics#12", "--skills", "workshop"]) == 1
 
 
+@pytest.mark.parametrize("name", workshop.NOT_ISSUE_SKILLS)
+def test_an_issue_run_rejects_skills_it_does_not_use(fake, name):
+    assert name not in workshop.job_skills()
+    assert fake.run("run", "acme/analytics#12", "--skills", f"add-fields,{name}") == 1
+    assert not fake.calls("gh")
+
+
 def test_claude_command_confines_the_agent(fake):
     def flag(cmd, name):
         return cmd[cmd.index(name) + 1]
@@ -559,7 +566,8 @@ def test_a_skill_is_chosen_when_none_is_named(fake):
     for name in ("add-fields", "remove-fields", "add-source", "update-docs", "other"):
         description = workshop.skill_description(workshop.SKILLS_DIR / name / "SKILL.md")
         assert description and f"- {name}: {description}\n" in prompt
-    assert "- workshop:" not in prompt and "- assess-failure:" not in prompt  # not job skills
+    for name in ("workshop", "assess-failure", "prepare-pr", "review-analytics-artifact"):
+        assert f"- {name}:" not in prompt  # not job skills
     [agent] = fake.state["agent_runs"]
     assert str(workshop.SKILLS_DIR / "remove-fields" / "SKILL.md") in agent["prompt"]
     assert skill_names(fake) == ["workshop", "remove-fields"]
@@ -574,7 +582,9 @@ def test_the_chosen_skill_is_read_from_the_first_word(fake, answer):
     assert skill_names(fake) == ["workshop", "add-source"]
 
 
-@pytest.mark.parametrize("answer", ["None of them fits.", "workshop", "assess-failure", ""])
+@pytest.mark.parametrize(
+    "answer", ["None of them fits.", "workshop", "assess-failure", "review-analytics-artifact", ""]
+)
 def test_an_answer_that_names_no_job_skill_gets_other(fake, answer):
     fake.set(route=answer)
     assert fake.outcome(*ROUTED) == "pr-open"
