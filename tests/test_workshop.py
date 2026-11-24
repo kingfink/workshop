@@ -100,6 +100,23 @@ def test_target_repo_skills(fake):
     assert (repo_skills / "triage" / "SKILL.md").read_text() == skill
 
 
+def test_the_workshop_skill_names_no_runner_files():
+    text = (workshop.SKILLS_DIR / "workshop" / "SKILL.md").read_text()
+    for word in ("handoff", "question.md", "pull-request.md", "comment.md"):
+        assert word not in text
+
+
+def test_the_prompt_says_where_to_leave_the_result(fake):
+    assert fake.outcome(*RUN) == "pr-open"
+    [agent] = fake.state["agent_runs"]
+    handoff = fake.home / ".workshop" / "handoff" / "acme-analytics-12"
+    assert f"Handoff directory: {handoff}\n" in agent["prompt"]
+    for name in ("question.md", "pull-request.md", "comment.md"):
+        assert name in agent["prompt"]
+    assert "cannot write to GitHub" in agent["prompt"]
+    assert "final message is not read" in agent["prompt"]
+
+
 def test_github_error_is_not_taken_for_a_repo_without_settings(fake):
     fake.set(failing={"api": 0})
     assert fake.run(*RUN) == 1
@@ -178,6 +195,7 @@ def test_fix_loop(fake):
     _, fix = (run["prompt"] for run in fake.state["agent_runs"])
     assert fix.startswith("Pull request #100 has failing checks.")
     assert "Failing checks: build\n" in fix and "column new_field not found" in fix
+    assert workshop.HANDOFF_RULES in fix  # a fresh invocation: the skills no longer say where the result goes
     assert "Fix attempts: 1 of 2" in fake.summaries()[0]
     assert "API-equivalent cost: $0.50." in fake.summaries()[0]  # both agent runs
     [run] = fake.runs()

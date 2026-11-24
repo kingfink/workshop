@@ -630,6 +630,21 @@ def agent_usage(log_path: Path) -> dict:
     return usage
 
 
+HANDOFF_RULES = """You cannot write to GitHub. Read it with the read-only github tools when you have them. When you \
+exit, the workshop tool publishes what you left in the handoff directory:
+
+- To ask, write the question to question.md. The tool posts it on the issue and publishes nothing else.
+- Otherwise the tool pushes your commits on the current branch, and opens a pull request from pull-request.md or \
+updates the open one. Write the title on the first line, then the body.
+- Write the close-out comment to comment.md. Once checks pass, the tool posts it on the issue with a link to the \
+pull request.
+
+If you leave neither a question nor commits, the job has failed. Your final message is not read.
+
+Commands run in a sandbox. They can write only to the working directory, the handoff directory and temp, and reach \
+only the network hosts the repository allows."""
+
+
 def job_lines(job: Job) -> list[str]:
     return [
         *(f"  {path}" for path in job.skills),
@@ -646,9 +661,12 @@ def initial_prompt(job: Job, issue: str = "") -> str:
             [
                 "You are working a job in a workshop. Read these files first and follow them exactly:",
                 *job_lines(job),
-                f"{read}. This job has no github tools: here is the issue with all its comments.\n\n{issue}"
+                f"{read}. This job has no github tools: the issue with all its comments is below."
                 if issue
                 else f"{read}, and the issue with all its comments.",
+                "",
+                HANDOFF_RULES,
+                *(["", "The issue with all its comments:", "", issue] if issue else []),
             ]
         )
         + "\n"
@@ -665,6 +683,8 @@ def fix_prompt(job: Job, pr: int | None, failing: list[str], logs: str) -> str:
                 "Logs:",
                 logs,
                 "Fix the cause and commit it on the same branch.",
+                "",
+                HANDOFF_RULES,
             ]
         )
         + "\n"
