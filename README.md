@@ -144,16 +144,19 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. Such a case can also require a `Kind:` line in the pull request, and a small model's judgment that the pull request does what the case says. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
 
+Each issue case gives the agent every job skill, as `run` does without `--skills`, and fails unless the agent read the case's skill; then it is graded as above. A case with `skills_only = true` gives only its own skills, to test a scope rule the agent would not reach from the full list.
+
+Evals are not part of CI, because each run costs real money. Run them when you change a skill or the prompt.
+
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
-`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing, need no external dependency registry and are excluded from issue-routing evals.
+`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing and need no external dependency registry.
 
 | Option | Default | |
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
 | `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
 | `--changed` | off | Only cases whose inputs differ from the branch point with `origin/HEAD`, including uncommitted and new files. Inputs are the case, fixture and skills; issue cases also use `workshop`. A change to any `workshop*.py` module selects every case. |
-| `--route` | off | Only choose each case's skill from its issue, as `run` does without `--skills`, and check that it is the case's skill, or the one its `route` names. No agent works the case, and no record is saved. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
