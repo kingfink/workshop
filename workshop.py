@@ -1211,6 +1211,8 @@ def run_record(job: Job, outcome: Outcome | None, error: str, total_s: float) ->
         "fix_attempts": outcome.fix_attempts if outcome else 0,
         "pr_url": outcome.pr_url if outcome else "",
         "pushed": job.pushed,
+        "checks_status": job.validation.get("status", ""),
+        "checks_reason": job.validation.get("reason", ""),
         "kind": job.kind,
         "seconds": {"total": round(total_s), "agent": round(job.agent_s), "checks": round(job.checks_s)},
         **agent_usage(job.log_path),

@@ -1,8 +1,10 @@
 import argparse
 import io
+import json
 import os
 import subprocess
 import tarfile
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -223,8 +225,11 @@ def test_the_agent_runs_in_a_vm_sandbox_that_is_always_terminated(job, tmp_path,
 
 @pytest.mark.filterwarnings("ignore:The work_queue function is executing locally")
 @pytest.mark.parametrize("first", [0, 1, RuntimeError("a Modal stream broke"), 130])
-def test_the_schedule_runs_each_configured_repo_on_modal(monkeypatch, first):
+def test_the_schedule_runs_each_configured_repo_on_modal(monkeypatch, tmp_path, first):
     runs, gh, commits = [], [], []
+    pings = []
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(workshop_modal, "heartbeat", lambda signal, batch_id: pings.append(signal))
 
     def main(argv):
         runs.append(argv)
@@ -246,6 +251,144 @@ def test_the_schedule_runs_each_configured_repo_on_modal(monkeypatch, first):
     assert gh == [("auth", "setup-git")] and commits == [1]
     web = [["run", "acme/web", "--modal"]]
     assert runs == [["run", "acme/analytics", "--modal"], *([] if first == 130 else web)]
+    assert pings == ["/start", "" if first == 0 else "/fail"]
+    events = [
+        json.loads(line) for line in (tmp_path / ".workshop/logs/batches.jsonl").read_text().splitlines()
+    ]
+    assert events[-1]["status"] == ("succeeded" if first == 0 else "failed")
+    assert events[-1]["failed_repos"] == ([] if first == 0 else ["acme/analytics"])
+
+
+@pytest.mark.filterwarnings("ignore:The work_queue function is executing locally")
+def test_batch_summary_counts_only_new_jobs_and_keeps_handoffs_separate(monkeypatch, tmp_path, capsys):
+    records = tmp_path / ".workshop/logs/runs.jsonl"
+    workshop.save_record({"outcome": "error", "reason": "an old run"}, records)
+    outcomes = [
+        {"outcome": "needs-info", "checks_status": "", "pr_url": ""},
+        {
+            "outcome": "escalated",
+            "checks_status": "unverified",
+            "pr_url": "https://github.com/acme/web/pull/2",
+        },
+        {"outcome": "pr-open", "checks_status": "passed", "pr_url": "https://github.com/acme/web/pull/3"},
+    ]
+
+    def main(argv):
+        for issue, record in enumerate(outcomes, 1):
+            workshop.save_record(
+                {**record, "repo": argv[1], "issue": issue, "reason": "private note"}, records
+            )
+        return 0
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("WORKSHOP_REPOS", "acme/web")
+    monkeypatch.setenv("WORKSHOP_DEPLOYMENT_SHA", "d" * 40)
+    monkeypatch.setattr(workshop_modal.modal, "current_function_call_id", lambda: "fc-example")
+    monkeypatch.setattr(workshop, "main", main)
+    monkeypatch.setattr(workshop, "gh", lambda *args: None)
+    monkeypatch.setattr(workshop_modal, "logs", type("Volume", (), {"commit": lambda self: None})())
+    pings = []
+    monkeypatch.setattr(
+        workshop_modal, "heartbeat", lambda signal, batch_id: pings.append((signal, batch_id))
+    )
+    workshop_modal.work_queue.local()
+    events = [json.loads(line) for line in (records.parent / "batches.jsonl").read_text().splitlines()]
+    start, end = events
+    assert start["event"] == "batch_start" and start["batch_id"] == end["batch_id"]
+    assert end["status"] == "succeeded" and end["event"] == "batch_end"
+    assert end["modal_call_id"] == "fc-example" and end["deployment_sha"] == "d" * 40
+    assert end["issues_processed"] == 3 and end["pull_requests"] == 2 and end["ci_unverified"] == 1
+    assert end["outcomes"] == {"needs-info": 1, "escalated": 1, "pr-open": 1}
+    assert [job["issue"] for job in end["jobs"]] == [1, 2, 3]
+    assert pings == [("/start", end["batch_id"]), ("", end["batch_id"])]
+    assert "private note" not in capsys.readouterr().err
+    assert "private note" not in (records.parent / "batches.jsonl").read_text()
+
+
+@pytest.mark.filterwarnings("ignore:The work_queue function is executing locally")
+@pytest.mark.parametrize("failure", ["auth", "commit", "interrupt", "empty-repos"])
+def test_early_failures_and_log_failures_never_send_success(monkeypatch, tmp_path, capsys, failure):
+    pings = []
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("WORKSHOP_REPOS", " , " if failure == "empty-repos" else "acme/analytics")
+    monkeypatch.setattr(workshop_modal, "heartbeat", lambda signal, batch_id: pings.append(signal))
+
+    def fail():
+        raise RuntimeError("service unavailable")
+
+    def main(argv):
+        if failure == "interrupt":
+            raise KeyboardInterrupt
+        return 0
+
+    monkeypatch.setattr(workshop, "main", main)
+    monkeypatch.setattr(workshop, "gh", lambda *args: fail() if failure == "auth" else None)
+    monkeypatch.setattr(
+        workshop_modal,
+        "logs",
+        type(
+            "Volume",
+            (),
+            {
+                "commit": lambda self: fail() if failure == "commit" else None,
+            },
+        )(),
+    )
+    expected = (
+        KeyboardInterrupt
+        if failure == "interrupt"
+        else (workshop.ToolError if failure == "empty-repos" else RuntimeError)
+    )
+    with pytest.raises(expected):
+        workshop_modal.work_queue.local()
+    assert pings == ["/start", "/fail"]
+    end = json.loads(capsys.readouterr().err.splitlines()[-1].removeprefix("workshop: "))
+    assert end["status"] == "failed" and end["error_type"] == expected.__name__
+    if failure == "commit":
+        assert end["logs_saved"] is False
+
+
+def test_healthchecks_pings_are_bounded_correlated_and_contain_no_job_data(monkeypatch):
+    requests = []
+
+    def opener(request, timeout):
+        requests.append((request, timeout))
+        return io.BytesIO(b"OK")
+
+    monkeypatch.setattr(workshop_modal.urllib.request, "urlopen", opener)
+    monkeypatch.delenv("HEALTHCHECKS_PING_URL", raising=False)
+    workshop_modal.heartbeat("/start", "run-id")
+    assert requests == []
+    monkeypatch.setenv("HEALTHCHECKS_PING_URL", "https://hc-ping.com/fake-token/?custom=1")
+    for signal in ("/start", "", "/fail"):
+        workshop_modal.heartbeat(signal, "run-id")
+    assert [urllib.parse.urlsplit(request.full_url).path for request, _ in requests] == [
+        "/fake-token/start",
+        "/fake-token",
+        "/fake-token/fail",
+    ]
+    for request, timeout in requests:
+        assert request.method == "POST" and request.data is None and timeout == 5
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query) == {
+            "custom": ["1"],
+            "rid": ["run-id"],
+        }
+
+
+def test_monitoring_outage_does_not_fail_work_or_expose_the_ping_token(monkeypatch, capsys):
+    attempts = []
+
+    def opener(request, timeout):
+        attempts.append(request)
+        raise OSError(f"failed to connect to {request.full_url}")
+
+    monkeypatch.setenv("HEALTHCHECKS_PING_URL", "https://hc-ping.com/fake-secret-token")
+    monkeypatch.setattr(workshop_modal.urllib.request, "urlopen", opener)
+    workshop_modal.heartbeat("/fail", "run-id")
+    assert len(attempts) == 3
+    output = capsys.readouterr().err
+    assert "ping failed after 3 attempts" in output
+    assert "fake-secret-token" not in output and "failed to connect" not in output
 
 
 def test_repo_secret_names_do_not_collide():

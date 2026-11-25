@@ -185,7 +185,7 @@ The tool runs in a Modal function with your GitHub token. It does every clone, p
 - Changes the agent didn't commit stay in the Sandbox, which is deleted when each agent run ends.
 - The Sandbox can reach Anthropic's API, the PostHog host if you set one, and the target repo's `sandbox.network.allowedDomains`.
 - If a Modal secret named `workshop-<owner>--<repo>` in lowercase, such as `workshop-acme--analytics`, exists, its values reach the agent's commands. That is where the target repo's own credentials go.
-- Transcripts and `runs.jsonl` go on the Modal volume `workshop-logs`. The clones and worktrees last only for the run.
+- Transcripts, per-issue `runs.jsonl`, and scheduled-batch `batches.jsonl` go on the Modal volume `workshop-logs`. The clones and worktrees last only for the run.
 
 To set it up:
 
@@ -197,6 +197,16 @@ To set it up:
 The GitHub Actions workflow deploys to the Modal environment `workshop` after tests pass on a push to `master`, including a merged PR. Create a GitHub environment named `modal`, allow only the `master` branch to deploy to it, and store `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` there for the intended Modal workspace. On plans that support service users, grant the deployment user Contributor access only to `workshop`. The runtime `workshop` secret stays in Modal. Deployments run one at a time, skip commits that are no longer the tip of `master`, and use the commit SHA as their deployment tag. PR checks never deploy.
 
 Fine-grained personal tokens cannot read private repositories' CI checks. For those PRs, Workshop records CI as unverified, comments that the checks need your review on GitHub, and leaves the issue waiting. It does not attempt CI repairs or retry the issue until you reply or queue it again. Public repositories keep the normal check and repair flow.
+
+### Monitoring the schedule
+
+Enable deployed-function alerts and failure digests in Modal's notification settings, and unmute the environment containing Workshop. Modal's workspace OpenTelemetry integration exports infrastructure telemetry separately from Claude's telemetry; configure `WORKSHOP_POSTHOG_TOKEN` and `WORKSHOP_POSTHOG_HOST` in the runtime secret for the latter.
+
+For missed or hung runs, create a dedicated Healthchecks check with cron `0 * * * *` in UTC. Set its grace period above the function's six-hour timeout, for example six hours and fifteen minutes; this also delays missing-run alerts, but avoids flagging a healthy long batch. Enable the check's notification integration and add its ping URL as `HEALTHCHECKS_PING_URL` in the Modal `workshop` secret. Redeploy after changing runtime secrets.
+
+Each scheduled batch sends start, success, or failure pings, correlated by a batch ID. Pings carry no job data. A monitoring outage is logged without the ping URL and does not stop issue processing. Errors, interruptions, and log-save failures fail the Modal call and send a failure ping; a hard timeout or process loss is detected by the check's grace period.
+
+Batch start and end records appear in Modal logs and `batches.jsonl`, with the batch ID, Modal call ID, deployed commit, duration, failed repos, issue outcomes, PR count, and unverified-CI count. Job pointers identify the detailed issue records. A successful batch means the runner finished: `needs-info` and `escalated` outcomes still need the owner's attention and remain visible in the summary. PR counts include both newly opened and updated PRs.
 
 `uv run ./workshop.py run '<owner>/<repo>#<issue>' --modal` runs one job from your machine with the agent on Modal. It needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` in your environment.
 
