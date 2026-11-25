@@ -29,6 +29,9 @@ REPO_SKILL_DIRS = (
     ".claude/skills",
 )  # a target repo's own skills, on its default branch; the first wins
 SKILL_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+# skills issue runs never use: inspect uses assess-failure, prepare uses prepare-pr, and review-analytics-artifact
+# reports findings instead of opening a pull request
+NOT_ISSUE_SKILLS = ("assess-failure", "prepare-pr", "review-analytics-artifact")
 
 LABELS = {  # name: (color, description)
     "workshop:queued": ("5319e7", "Ready for a run. Applied by the owner."),
@@ -208,11 +211,7 @@ def skill_description(path: Path) -> str:
     return found[1].strip() if found else ""
 
 
-NON_JOB_SKILLS = (
-    "workshop",
-    "assess-failure",
-    "prepare-pr",
-)  # every job has workshop; inspect and prepare the others
+NON_JOB_SKILLS = ("workshop", *NOT_ISSUE_SKILLS)  # every job has workshop
 
 
 def job_skills() -> dict[str, str]:
@@ -1230,8 +1229,9 @@ def runnable_issues(repo: str) -> list[int]:
 def cmd_run(args: argparse.Namespace) -> int:
     repo, issue = parse_run_ref(args.ref)
     names = parse_skills(args.skills) if args.skills else None
-    if names and "prepare-pr" in names:
-        raise ToolError("prepare-pr is used by prepare, not issue runs")
+    for name in names or []:
+        if name in NOT_ISSUE_SKILLS:
+            raise ToolError(f"{name} is not used by issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
     require_gh_login()

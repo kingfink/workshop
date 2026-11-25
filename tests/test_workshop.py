@@ -24,6 +24,13 @@ def test_bad_arguments_exit_1():
     assert workshop.main(["run", "acme/analytics#12", "--skills", "workshop"]) == 1
 
 
+@pytest.mark.parametrize("name", workshop.NOT_ISSUE_SKILLS)
+def test_an_issue_run_rejects_skills_it_does_not_use(fake, name):
+    assert name not in workshop.job_skills()
+    assert fake.run("run", "acme/analytics#12", "--skills", f"add-fields,{name}") == 1
+    assert not fake.calls("gh")
+
+
 def test_claude_command_confines_the_agent(fake):
     def flag(cmd, name):
         return cmd[cmd.index(name) + 1]
@@ -678,7 +685,8 @@ def test_the_agent_chooses_when_no_skill_is_named(fake):
         path = workshop.SKILLS_DIR / name / "SKILL.md"
         assert f"- {name}: {workshop.skill_description(path)}\n" in agent["prompt"]
         assert f"{path}\n" in agent["prompt"]
-    assert "assess-failure" not in agent["prompt"] and "prepare-pr" not in agent["prompt"]
+    for name in workshop.NOT_ISSUE_SKILLS:
+        assert name not in agent["prompt"]
     assert workshop.CHOOSE_RULES in agent["prompt"]
     assert skill_names(fake) == ["workshop", "remove-fields"]
     assert fake.runs()[0]["cost_usd"] == 0.25  # no separate choosing step
