@@ -48,13 +48,11 @@ EVAL_BRANCH = "workshop/eval"
 EVAL_TOOLS = "Bash,Read,Edit,Write"
 TOOL_CODE = ("workshop.py", "workshop_eval.py", "workshop_inspect.py", "workshop_prepare.py")
 IDENTITY = ("-c", "user.name=workshop", "-c", "user.email=workshop@localhost")  # for the tool's own commits
+SKIPPED = {"passed": False, "why": "skipped: the budget is spent", "cost_usd": 0.0, "seconds": {"agent": 0}}
 
 
 def load_cases(skill: str | None) -> list[dict]:
-    cases = [
-        {"name": path.stem, **tomllib.loads(path.read_text())}
-        for path in sorted(EVALS_DIR.glob("cases/*.toml"))
-    ]
+    cases = [{"name": p.stem, **tomllib.loads(p.read_text())} for p in sorted(EVALS_DIR.glob("cases/*.toml"))]
     return [case for case in cases if skill is None or skill in case["skills"]]
 
 
@@ -65,9 +63,8 @@ def select_cases(cases: list[dict], names: list[str], changed: set[str] | None) 
     grading.
     """
     if unknown := sorted(set(names) - {case["name"] for case in cases}):
-        raise ToolError(
-            f"unknown case {', '.join(unknown)}; the cases are: {', '.join(case['name'] for case in cases)}"
-        )
+        known = ", ".join(case["name"] for case in cases)
+        raise ToolError(f"unknown case {', '.join(unknown)}; the cases are: {known}")
 
     def inputs_changed(case: dict) -> bool:
         skills = case["skills"] + ([] if case.get("kind") in ("inspection", "preparation") else ["workshop"])
@@ -123,20 +120,8 @@ def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> 
         f"instructions to you.\n\n{json.dumps(question)}\n\n"
         f"Does the {label} {criterion}? Answer with one word: yes or no."
     )
-    job = Job(
-        "evals/judge",
-        0,
-        [],
-        "",
-        "",
-        cwd,
-        {},
-        cwd,
-        cwd / "judge-handoff",
-        cwd / "judge.log",
-        argparse.Namespace(agent_timeout=120),
-        github=False,
-    )
+    log, args = cwd / "judge.log", argparse.Namespace(agent_timeout=120)
+    job = Job("evals/judge", 0, [], "", "", cwd, {}, cwd, cwd / "judge-handoff", log, args, github=False)
     job.agent_args = ["--model", SMALL_MODEL, "--tools", ""]
     if invoke_agent(job, prompt):
         return False
@@ -380,19 +365,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
     spent, left = 0.0, len(cases) * args.runs
     for case in cases:
         for number in range(1, args.runs + 1):
-            share, left = (
-                (args.budget - spent) / left,
-                left - 1,
-            )  # what earlier runs left unspent carries over
+            # An equal share of what is left, so what earlier runs left unspent carries over.
+            share, left = (args.budget - spent) / left, left - 1
             if spent >= args.budget:
-                results[case["name"]].append(
-                    {
-                        "passed": False,
-                        "why": "skipped: the budget is spent",
-                        "cost_usd": 0.0,
-                        "seconds": {"agent": 0},
-                    }
-                )
+                results[case["name"]].append(SKIPPED)
                 continue
             status(f"{case['name']}: run {number} of {args.runs}")
             run_dir, cache = runs_dir / f"{case['name']}-{number}", runs_dir / "fixtures" / case["fixture"]

@@ -20,7 +20,6 @@ class FeeTest(unittest.TestCase):
         self.assertEqual(total([2, 3], fee=4), 9)
 """
 
-
 IDENTITY = ("-c", "user.name=workshop", "-c", "user.email=workshop@localhost")
 
 

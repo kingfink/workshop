@@ -78,20 +78,14 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
 
     def agent(job, prompt):
         runs.append((prompt, workshop.claude_command(job)[-4:]))
-        reads = [
-            {
-                "type": "assistant",
-                "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": path}}]},
-            }
-            for path in re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+        paths = re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+        reads = [{"type": "tool_use", "name": "Read", "input": {"file_path": path}} for path in paths]
+        events = [
+            {"type": "assistant", "message": {"content": reads}},
+            {"type": "result", "total_cost_usd": 0.1},
         ]
         with job.log_path.open("a") as log:
-            log.write(
-                "=== output:\n"
-                + "".join(json.dumps(event) + "\n" for event in reads)
-                + json.dumps({"type": "result", "total_cost_usd": 0.1})
-                + "\n"
-            )
+            log.write("=== output:\n" + "".join(json.dumps(event) + "\n" for event in events))
         if "phone" in prompt:
             (job.handoff / "question.md").write_text("Which table has phone numbers?\n")
         elif "email" in prompt:
@@ -102,23 +96,7 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
             if extra and "failing checks" not in prompt:
                 extra(job.worktree)
             (job.handoff / "pull-request.md").write_text("Add plan_tier\n\nCloses #1\n")
-            subprocess.run(["git", "-C", job.worktree, "add", "--all"], check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    job.worktree,
-                    "-c",
-                    "user.name=agent",
-                    "-c",
-                    "user.email=agent@localhost",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "Change",
-                ],
-                check=True,
-            )
+            workshop_eval.commit(job.worktree, "Change")
         return 0
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)
@@ -167,37 +145,21 @@ def test_eval_budget(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("change", [None, "committed", "staged", "unstaged", "untracked"])
 def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
     agent_that(tmp_path, monkeypatch)
-    case = next(
+    [case] = [
         case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-multiple-ambiguous"
-    )
+    ]
     monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
     ask = workshop.invoke_agent
 
     def agent(job, prompt):
         result = ask(job, prompt)
         if change:
-            model = (
-                job.worktree
-                / "models"
-                / "marts"
-                / ("partial.sql" if change == "untracked" else "dim_customers.sql")
-            )
-            model.write_text("select 1 as partial_change\n")
-            if change in ("committed", "staged"):
+            name = "partial.sql" if change == "untracked" else "dim_customers.sql"
+            (job.worktree / "models" / "marts" / name).write_text("select 1 as partial_change\n")
+            if change == "staged":
                 workshop.git("-C", job.worktree, "add", "--all")
             if change == "committed":
-                workshop.git(
-                    "-C",
-                    job.worktree,
-                    "-c",
-                    "user.name=agent",
-                    "-c",
-                    "user.email=agent@localhost",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "Partial change before asking",
-                )
+                workshop_eval.commit(job.worktree, "Partial change before asking")
         return result
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)

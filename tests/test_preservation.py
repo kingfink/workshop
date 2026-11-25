@@ -9,7 +9,7 @@ import pytest
 import workshop_eval
 
 spec = importlib.util.spec_from_file_location(
-    "dbt_fixture", workshop_eval.EVALS_DIR / "fixtures/dbt-duckdb/fixture.py"
+    "dbt", workshop_eval.EVALS_DIR / "fixtures/dbt-duckdb/fixture.py"
 )
 dbt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dbt)
@@ -160,9 +160,7 @@ def test_check_grades_only_changes_to_models_and_their_results(tmp_path, monkeyp
     assert dbt.check(tmp_path, cache) == ("dbt build failed", "Compilation Error")
     monkeypatch.setattr(dbt, "build", lambda cache, project: (True, ""))
     monkeypatch.setattr(dbt, "snapshot", lambda cache, project: baseline)
-    monkeypatch.setattr(
-        dbt, "query", lambda cache, project, sql: [[1, "free"], [2, "pro"]]
-    )  # same distribution
+    monkeypatch.setattr(dbt, "query", lambda cache, project, sql: [[1, "free"], [2, "pro"]])  # same tiers
     assert dbt.check(tmp_path, cache)[0] == "`select tier` returned [[1, 'free'], [2, 'pro']]"
     monkeypatch.setattr(dbt, "query", lambda cache, project, sql: case["queries"][0]["rows"])
     assert dbt.check(tmp_path, cache) == ("", "")

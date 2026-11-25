@@ -14,8 +14,6 @@ from pathlib import Path
 
 APP = (Path(__file__).resolve().parent / "repo" / "app.py").read_text()
 COMPATIBLE_APP = APP.replace("uppercase=True", "upper=True")
-
-
 IDENTITY = ("-c", "user.name=workshop", "-c", "user.email=workshop@localhost")
 
 
