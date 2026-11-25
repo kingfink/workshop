@@ -23,6 +23,7 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 - Claude Code, logged in, where its [sandbox](https://code.claude.com/docs/en/sandboxing) can run. That page lists the platforms it supports and what each needs.
 - [GitHub's MCP server](https://github.com/github/github-mcp-server) as `github-mcp-server` on the `PATH`.
 - For `eval` and development, [uv](https://docs.astral.sh/uv/).
+- For `--modal` and unattended runs, a [Modal](https://modal.com) account. uv installs its client.
 
 ## Commands
 
@@ -71,6 +72,7 @@ The agent runs at `medium` effort. Each invocation's prompt includes its deadlin
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
 | `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
+| `--modal` | off | Run the agent in a Modal Sandbox. See [Unattended runs on Modal](#unattended-runs-on-modal). |
 
 Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 
@@ -170,6 +172,28 @@ Evals are not part of CI, because each run costs real money. Run them when you c
 
 Each run's record goes in `~/.workshop/logs/evals.jsonl`, and its files in `~/.workshop/evals/runs/`.
 
+## Unattended runs on Modal
+
+`workshop_modal.py` runs `run <owner>/<repo> --modal` every hour on [Modal](https://modal.com) for each repo you configure, one run at a time. It works only the issues you labelled, as `run` does.
+
+The tool runs in a Modal function with your GitHub token. It does every clone, push and comment. The agent runs in a separate Modal Sandbox, with the same skills, prompt and Claude Code sandbox settings as on your machine. The differences:
+
+- The working copy goes into the Sandbox as a git bundle, and the job branch's commits come back the same way. The token stays with the tool.
+- The agent has no GitHub tools. The tool puts the issue and its comments in the prompt, and keeps only what people with push access wrote. `update-docs`, which reads other issues and pull requests, needs to run on your machine.
+- If the default branch has `.workshop/setup.sh`, it runs in that commit's files, with the network open, while the Sandbox's image is built. Install the tools that jobs need there. Modal reuses the image while the commit is the same.
+- The Sandbox can reach Anthropic's API, the PostHog host if you set one, and the target repo's `sandbox.network.allowedDomains`.
+- If a Modal secret named `workshop-<owner>-<repo>`, such as `workshop-acme-analytics`, exists, its values reach the agent's commands. That is where the target repo's own credentials go.
+- Transcripts and `runs.jsonl` go on the Modal volume `workshop-logs`. The clones and worktrees last only for the run.
+
+To set it up:
+
+1. Create a fine-grained GitHub token for the target repos. Give it read and write access to contents, issues and pull requests, and read access to actions and commit statuses.
+2. Run `claude setup-token` for a Claude login that lasts a year.
+3. Create a Modal secret named `workshop` holding `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `WORKSHOP_REPOS`, a comma-separated list such as `acme/analytics,acme/web`. To send traces to PostHog, add `WORKSHOP_POSTHOG_TOKEN` and `WORKSHOP_POSTHOG_HOST`.
+4. Deploy it with `uv run modal deploy workshop_modal.py`. Run it once now with `uv run modal run workshop_modal.py::work_queue`.
+
+`uv run ./workshop.py run '<owner>/<repo>#<issue>' --modal` runs one job from your machine with the agent on Modal. It needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` in your environment.
+
 ## Development
 
 Install the development tools with `uv sync --locked`. Their versions are recorded in `uv.lock`. Ruff formats Python code, sorts imports and checks for common mistakes.
@@ -195,6 +219,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
 - With PostHog set up (see [run records](#run-records)), Claude Code sends that project the agent's token counts, cost, timing and tool names, the program a command ran if it is a common one such as `git`, the session ID and the Claude account's email. It sends no prompts, responses, command lines, file paths or tool output: the tool turns on none of Claude Code's flags that add them, and the agent gets none from your shell. The project token reaches Claude Code but not the agent's commands.
+- With `--modal`, Claude Code runs in a Modal Sandbox under Modal's VM runtime, because its sandbox cannot run under gVisor, Modal's default. The Sandbox gets the commits, the skills and the handoff directory, but no GitHub token. The Claude login reaches only the `claude` process, and Claude Code's sandbox hides it from commands, as on your machine. Commands can read the target repo's own Modal secret.
 - The pull request's checks run the agent's code outside the sandbox, with the secrets and network access the target repo's CI gives a branch of the same repo. The tool sends the logs of failed runs back to the agent.
 
 ## Run records

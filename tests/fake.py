@@ -67,6 +67,16 @@ def gh(state, args):
                 }
             )
         )
+    elif args[0] == "api" and args[-1] == "repos/acme/analytics/issues/12/comments?per_page=100":
+        comments = [
+            {
+                "body": comment["body"],
+                "author_association": comment.get("authorAssociation", "OWNER"),
+                "user": {"login": comment.get("login", "owner")},
+            }
+            for comment in issue["comments"]
+        ]
+        print(json.dumps([comments[:1], comments[1:]]))  # --slurp: one list per page
     elif args[0] == "api" and (
         found := re.fullmatch(r"repos/acme/analytics/git/(trees|blobs)/(\w+)(\?recursive=1)?", args[-1])
     ):
