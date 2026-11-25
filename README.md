@@ -194,6 +194,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
+- With PostHog set up (see [run records](#run-records)), Claude Code sends that project the agent's token counts, cost, timing and tool names, the program a command ran if it is a common one such as `git`, the session ID and the Claude account's email. It sends no prompts, responses, command lines, file paths or tool output: the tool turns on none of Claude Code's flags that add them, and the agent gets none from your shell. The project token reaches Claude Code but not the agent's commands.
 - The pull request's checks run the agent's code outside the sandbox, with the secrets and network access the target repo's CI gives a branch of the same repo. The tool sends the logs of failed runs back to the agent.
 
 ## Run records
@@ -203,6 +204,8 @@ The agent's log streams to `~/.workshop/logs/` and stays there: it can hold anyt
 Each issue run also records its outcome, the skills it used with a hash of each, the pull request and the commit the tool last pushed, its time in the agent and waiting for checks, and the agent's model, turns, tokens, cost and tool calls. The record goes in `~/.workshop/logs/runs.jsonl` and, hidden, in the run's comment on the issue. The comment shows the agent time and cost and, for a pull request, the GitHub checks' status at the commit the tool pushed: `passed` if they finished with a success and no failure, otherwise `failed` or `unverified`.
 
 Costs are API-equivalent: what the tokens would cost at API prices, whether or not Claude Code is logged in with a subscription.
+
+To follow the agent in PostHog too, set `WORKSHOP_POSTHOG_TOKEN` to a PostHog project token and `WORKSHOP_POSTHOG_HOST` to its host, such as `https://us.i.posthog.com`. Every agent run then exports Claude Code's metrics, events and traces to that project; [security](#security) says what they hold. Without both variables, nothing is exported.
 
 ## Labels
 

@@ -450,7 +450,38 @@ def repo_settings(repo: str, commit: str) -> dict:
 
 # The only variables the agent gets from the shell that started the run, so its commands see none of its secrets.
 AGENT_ENV = ("PATH", "HOME", "USER", "LANG", "SHELL", "TMPDIR")
-CLAUDE_LOGIN = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR")  # hidden from commands
+CLAUDE_LOGIN = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR")
+HIDDEN_FROM_COMMANDS = (*CLAUDE_LOGIN, "OTEL_EXPORTER_OTLP_HEADERS")  # the Claude login and the PostHog token
+
+# Where Claude Code sends each kind of telemetry on the PostHog host: the one place to change after a test session.
+# The AI endpoint keeps only spans named or attributed gen_ai., llm., ai. or traceloop.; /i/v1/traces keeps every span.
+POSTHOG_OTLP = {
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "/i/v1/metrics",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "/i/v1/logs",  # Claude Code's events
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "/i/v0/ai/otel",
+}
+
+
+def telemetry_env() -> dict[str, str]:
+    """Claude Code's OpenTelemetry settings, if the owner's environment names a PostHog project token and host.
+
+    Checked against code.claude.com/docs/en/monitoring-usage and posthog.com/docs on 2026-11-25. It sets none of
+    the flags that add content (OTEL_LOG_*, detailed beta tracing), and the agent gets none from the shell, so PostHog
+    gets tokens, cost, timing and tool names but no prompts, responses, command lines or their output.
+    """
+    token, host = os.environ.get("WORKSHOP_POSTHOG_TOKEN"), os.environ.get("WORKSHOP_POSTHOG_HOST")
+    if not (token and host):
+        return {}
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",  # traces, in beta
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",  # PostHog takes no gRPC
+        **{name: host.rstrip("/") + path for name, path in POSTHOG_OTLP.items()},
+        "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer {token}",
+    }
 
 
 def agent_env(job: Job) -> dict[str, str]:
@@ -463,7 +494,7 @@ def agent_env(job: Job) -> dict[str, str]:
             for name, value in job.settings.get("env", {}).items()
         )
     )
-    return {**kept_env(), "CLAUDE_ENV_FILE": str(env_file)}
+    return {**kept_env(), **telemetry_env(), "CLAUDE_ENV_FILE": str(env_file)}
 
 
 def kept_env() -> dict[str, str]:
@@ -487,7 +518,7 @@ def claude_settings(job: Job) -> dict:
             "enabled": True,
             "allowUnsandboxedCommands": False,
             "failIfUnavailable": True,
-            "credentials": {"envVars": [{"name": name, "mode": "deny"} for name in CLAUDE_LOGIN]},
+            "credentials": {"envVars": [{"name": name, "mode": "deny"} for name in HIDDEN_FROM_COMMANDS]},
             "network": {"allowedDomains": network.get("allowedDomains", [])},
             "filesystem": {
                 "denyRead": ["~/"],

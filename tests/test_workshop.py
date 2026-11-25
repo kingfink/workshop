@@ -31,7 +31,10 @@ def test_an_issue_run_rejects_skills_it_does_not_use(fake, name):
     assert not fake.calls("gh")
 
 
-def test_claude_command_confines_the_agent(fake):
+def test_claude_command_confines_the_agent(fake, monkeypatch):
+    monkeypatch.setenv("WORKSHOP_POSTHOG_TOKEN", "phc_test")
+    monkeypatch.setenv("WORKSHOP_POSTHOG_HOST", "https://us.i.posthog.com")
+
     def flag(cmd, name):
         return cmd[cmd.index(name) + 1]
 
@@ -62,7 +65,10 @@ def test_claude_command_confines_the_agent(fake):
     assert (
         sandbox["enabled"] and not sandbox["allowUnsandboxedCommands"] and "excludedCommands" not in sandbox
     )
-    assert {"name": "ANTHROPIC_API_KEY", "mode": "deny"} in sandbox["credentials"]["envVars"]
+    # commands see neither the Claude login nor any variable that holds the PostHog token
+    denied = {entry["name"] for entry in sandbox["credentials"]["envVars"] if entry["mode"] == "deny"}
+    holding_token = {name for name, value in workshop.telemetry_env().items() if "phc_test" in value}
+    assert holding_token and {*workshop.CLAUDE_LOGIN, *holding_token} <= denied
     assert sandbox["filesystem"]["denyRead"] == ["~/"] and sandbox["network"]["allowedDomains"] == []
     assert str(skill.parent) in sandbox["filesystem"]["allowRead"]  # so a skill can ship scripts
 
@@ -86,11 +92,48 @@ def test_agent_gets_no_secrets(fake, monkeypatch):
     monkeypatch.setenv(
         "ANTHROPIC_API_KEY", "sk-test"
     )  # Claude Code's own; the sandbox hides it from commands
+    monkeypatch.setenv("CLAUDE_CODE_ENABLE_TELEMETRY", "1")  # the shell's own telemetry settings stay out
+    monkeypatch.setenv("WORKSHOP_POSTHOG_TOKEN", "phc_test")  # and without a host too, nothing is exported
     fake.set(default_branch_files={".claude/settings.json": json.dumps({"env": {"DBT_TARGET": "dev it"}})})
     assert fake.outcome(*RUN) == "pr-open"
     [agent] = fake.state["agent_runs"]
     assert "CLOUD_SECRET" not in agent["env"] and "ANTHROPIC_API_KEY" in agent["env"]
+    assert not [
+        name for name in agent["env"] if "TELEMETRY" in name or name.startswith(("OTEL_", "WORKSHOP_"))
+    ]
     assert agent["env_file"] == "export DBT_TARGET='dev it'\n"  # the target repo's env reaches only commands
+
+
+# Claude Code's flags that add prompts, responses, tool input or tool output to what it exports
+CONTENT_FLAGS = (
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_RAW_API_BODIES",
+    "ENABLE_BETA_TRACING_DETAILED",
+    "BETA_TRACING_ENDPOINT",
+)
+
+
+def test_telemetry_goes_to_posthog_without_content(fake, monkeypatch):
+    for name in CONTENT_FLAGS:
+        monkeypatch.setenv(name, "1")  # even if the owner's shell turns one on
+    monkeypatch.setenv("WORKSHOP_POSTHOG_TOKEN", "phc_test")
+    monkeypatch.setenv("WORKSHOP_POSTHOG_HOST", "https://eu.i.posthog.com/")
+    assert fake.outcome(*RUN) == "pr-open"
+    [agent] = fake.state["agent_runs"]
+    telemetry = workshop.telemetry_env()
+    assert set(telemetry) <= set(agent["env"])
+    assert not {*CONTENT_FLAGS, "WORKSHOP_POSTHOG_TOKEN"} & set(agent["env"])
+    assert (
+        telemetry["CLAUDE_CODE_ENABLE_TELEMETRY"] == telemetry["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+    )
+    for signal in ("METRICS", "LOGS", "TRACES"):
+        assert telemetry[f"OTEL_{signal}_EXPORTER"] == "otlp"
+        assert telemetry[f"OTEL_EXPORTER_OTLP_{signal}_ENDPOINT"].startswith("https://eu.i.posthog.com/i/")
+    assert telemetry["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"  # PostHog takes no gRPC
+    assert telemetry["OTEL_EXPORTER_OTLP_HEADERS"] == "Authorization=Bearer phc_test"
 
 
 def skill(name: str, source: str = "") -> str:
