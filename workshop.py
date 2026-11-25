@@ -241,6 +241,26 @@ def view_issue(repo: str, issue: int, fields: str) -> dict:
     return gh_json("issue", "view", issue, "--repo", repo, "--json", fields)
 
 
+LEFT_OUT = "(left out: written by someone without push access)"
+
+
+def trusted_thread(repo: str, issue: int) -> str:
+    """The issue and its comments, for an agent without GitHub tools. Like the GitHub server's lockdown mode, it keeps
+    only what people with push access wrote."""
+    item = gh_json("api", f"repos/{repo}/issues/{issue}")
+    path = f"repos/{repo}/issues/{issue}/comments?per_page=100"
+    comments = [comment for page in gh_json("api", "--paginate", "--slurp", path) for comment in page]
+
+    def text(entry: dict, key: str = "body") -> str:
+        return (entry[key] or "").strip() if entry.get("author_association") in TRUSTED_AUTHORS else LEFT_OUT
+
+    thread = [f"# {text(item, 'title')}", *([] if text(item) == LEFT_OUT else ["", text(item)])]
+    for number, comment in enumerate(comments, 1):
+        author = (comment.get("user") or {}).get("login", "ghost")
+        thread += ["", f"## Comment {number}, by {author}", "", text(comment)]
+    return "\n".join(thread)
+
+
 def set_labels(repo: str, issue: int, add: list[str], remove: list[str]) -> None:
     """Add and remove labels on the issue, touching only those that change."""
     current = {label["name"] for label in view_issue(repo, issue, "labels")["labels"]}
@@ -424,6 +444,7 @@ class Job:
     evidence_dir: Path | None = None  # additional read-only logs supplied by the tool
     budget: float = 0.0  # API-equivalent dollars for all of this run's agent invocations; 0 for no cap
     choose: bool = False  # `skills` are offered: the agent reads workshop and chooses the job skills that fit
+    modal: bool = False  # the agent runs in a Modal Sandbox, without GitHub tools
     validation: dict = field(default_factory=dict)  # the latest wait_for_checks result
 
     def run_agent(self, prompt: str) -> int:
@@ -625,6 +646,14 @@ def invoke_agent(job: Job, prompt: str) -> int:
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"=== {timestamp()} prompt:\n{prompt}\n=== output:\n")
         log.flush()
+        if job.modal:
+            import workshop_modal  # cmd_run checked that it imports
+
+            code = workshop_modal.run_agent(job, cmd, env, prompt, log)
+            log.write(
+                f"\n=== timed out after {timeout_s}s\n" if code == 124 else f"\n=== exited with code {code}\n"
+            )
+            return code
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -965,7 +994,12 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous
     start = time.monotonic()
     head_seen = False
     while True:
-        observed_head, checks = pr_checks(repo, pr)
+        try:
+            observed_head, checks = pr_checks(repo, pr)
+        except ToolError as exc:
+            if "Resource not accessible by personal access token" not in str(exc):
+                raise
+            return {"status": "unverified", "reason": "checks-inaccessible", "head_sha": head, "checks": []}
         head = head or observed_head
         result = {"status": "unverified", "reason": "", "head_sha": head, "checks": checks}
         if observed_head != head:
@@ -1072,6 +1106,14 @@ def prove(job: Job, pr: dict) -> Outcome:
         job.validation = wait_for_checks(job.repo, pr["number"], job.args.checks_timeout, job.pushed)
         job.checks_s += time.monotonic() - started
         state, reason = job.validation["status"], job.validation["reason"]
+        if reason == "checks-inaccessible":
+            return Outcome(
+                "escalated",
+                "the GitHub token cannot read CI checks; review the pull request's checks on GitHub",
+                pr["url"],
+                attempts,
+                handoff_text(job, "comment.md"),
+            )
         if state == "passed" or reason in ("no-checks", "all-skipped"):
             reason = {
                 "reported-checks-passed": "reported checks passed",
@@ -1232,6 +1274,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise ToolError(f"{name} is not used by issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
+    if args.modal:  # before any issue is labelled
+        try:
+            import workshop_modal  # only runs on Modal need the modal client
+        except ImportError as exc:
+            raise ToolError(f"--modal needs the modal client: {exc}") from None
+        workshop_modal.sandbox_env(dict(os.environ))  # the Claude login
     require_gh_login()
     if issue:
         work(repo, issue, names, args)
@@ -1268,7 +1316,7 @@ def work(repo: str, issue: int, names: list[str] | None, args: argparse.Namespac
     job = Job(
         repo, issue, [], branch, base, clone, repo_settings(repo, base), worktree, handoff, log_path, args
     )
-    job.budget = args.budget
+    job.budget, job.modal, job.github = args.budget, args.modal, not args.modal
     repo_skills = copy_repo_skills(repo, base, home / "logs" / name / "skills")  # this run's copy
     job.choose = names is None
     job.skills = offered_skills(repo_skills) if job.choose else find_skills(names, repo_skills)
@@ -1277,7 +1325,7 @@ def work(repo: str, issue: int, names: list[str] | None, args: argparse.Namespac
     try:
         status("labelling the issue workshop:working")
         set_labels(repo, issue, add=["workshop:working"], remove=["workshop:queued", "workshop:waiting"])
-        code = job.run_agent(initial_prompt(job))
+        code = job.run_agent(initial_prompt(job, "" if job.github else trusted_thread(repo, issue)))
         outcome = determine_outcome(job, code)
         status(f"{outcome.name}: {outcome.reason}")
         record = run_record(job, outcome, "", time.monotonic() - started)
@@ -1445,6 +1493,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--agent-timeout", type=int, default=900, help="seconds per agent run")
     run.add_argument("--checks-timeout", type=int, default=300, help="seconds to wait for checks each round")
     run.add_argument("--budget", type=float, default=10.0, help="API-equivalent dollars for this run's agent")
+    run.add_argument("--modal", action="store_true", help="run the agent in a Modal Sandbox")
     prepare = sub.add_parser("prepare", help="prepare one PR, or a repo's eligible PRs")
     prepare.add_argument("ref", metavar="OWNER/REPO[#PR]")
     prepare.add_argument("--include-drafts", action="store_true", help="include drafts in a batch")
