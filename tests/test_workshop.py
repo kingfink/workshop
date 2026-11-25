@@ -64,6 +64,7 @@ def test_claude_command_confines_the_agent(fake):
     )
     assert {"name": "ANTHROPIC_API_KEY", "mode": "deny"} in sandbox["credentials"]["envVars"]
     assert sandbox["filesystem"]["denyRead"] == ["~/"] and sandbox["network"]["allowedDomains"] == []
+    assert str(skill.parent) in sandbox["filesystem"]["allowRead"]  # so a skill can ship scripts
 
     # the target repo's default branch adds hosts, but cannot turn the sandbox off
     settings = {"sandbox": {"enabled": False, "network": {"allowedDomains": ["bigquery.googleapis.com"]}}}
@@ -101,20 +102,26 @@ def test_target_repo_skills(fake):
     fake.set(
         default_branch_files={
             ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
-            ".agents/skills/add-fields/reference.md": "ref",
+            ".agents/skills/add-fields/scripts/check.sh": "#!/bin/sh\r\necho ok\r\n",
+            ".agents/skills/add-fields/../../../escaped.txt": "x",
             ".claude/skills/add-fields/SKILL.md": "loses to .agents",
             ".claude/skills/triage/SKILL.md": skill("triage"),
             ".agents/skills/workshop/SKILL.md": skill("workshop"),
             ".workshop/skills/remove-fields/SKILL.md": skill("remove-fields"),
-        }
+        },
+        default_branch_executables=[".agents/skills/add-fields/scripts/check.sh"],
+        default_branch_links={".agents/skills/add-fields/secret.md": "/etc/passwd"},
     )
     assert fake.outcome("run", "acme/analytics#12", "--skills", "add-fields,triage") == "pr-open"
     [agent] = fake.state["agent_runs"]
     copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
-    assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]
+    assert f"{workshop.SKILLS_DIR / 'workshop' / 'SKILL.md'}\n" in agent["prompt"]  # never the repo's
     assert f"{copies / 'add-fields' / 'SKILL.md'}\n" in agent["prompt"]
     assert (copies / "add-fields" / "SKILL.md").read_text() == skill("add-fields")
-    assert (copies / "add-fields" / "reference.md").read_text() == "ref"
+    script = copies / "add-fields" / "scripts" / "check.sh"
+    assert script.read_bytes() == b"#!/bin/sh\r\necho ok\r\n" and os.access(script, os.X_OK)
+    assert not (copies / "add-fields" / "secret.md").exists()  # a link could point anywhere
+    assert not (copies.parent.parent / "escaped.txt").exists()  # so could a path out of the folder
     assert (copies / "triage" / "SKILL.md").read_text() == skill("triage")
     assert not (copies / "remove-fields").exists()  # .workshop/skills is no longer read
 
@@ -131,64 +138,18 @@ def test_a_target_repo_copy_of_workshops_own_skill_is_ignored(fake, monkeypatch,
     assert (str(workshop.SKILLS_DIR / "add-fields" / "SKILL.md") in agent["prompt"]) is not from_repo
 
 
-def test_links_in_a_skill_folder_are_not_copied(fake):
-    fake.set(
-        default_branch_files={".agents/skills/add-fields/SKILL.md": skill("add-fields")},
-        default_branch_links={".agents/skills/add-fields/secret.md": "/etc/passwd"},
-    )
-    assert fake.outcome(*RUN) == "pr-open"
-    copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
-    assert not (copies / "add-fields" / "secret.md").exists()
-
-
-def test_a_skill_folder_too_large_to_list_changes_no_labels(fake):
-    fake.set(
-        tree_truncated=True, default_branch_files={".agents/skills/add-fields/SKILL.md": skill("add-fields")}
-    )
-    assert fake.run(*RUN) == 1
-    assert fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []
-
-
-def test_only_the_skill_folders_are_listed(fake):
-    fake.set(
-        tree_truncated=True, default_branch_files={"models/orders.sql": "select 1"}
-    )  # a repo too large to list
-    assert fake.outcome(*RUN) == "pr-open"
-
-
-def test_skill_files_outside_their_folder_are_not_copied(fake):
-    fake.set(
-        default_branch_files={
-            ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
-            ".agents/skills/add-fields/../../../escaped.txt": "x",
-        }
-    )
-    assert fake.outcome(*RUN) == "pr-open"
-    assert not (fake.home / ".workshop" / "logs" / "escaped.txt").exists()
-
-
-def test_skill_files_are_copied_exactly_and_commands_can_read_them(fake):
-    fake.set(
-        default_branch_files={
-            ".agents/skills/add-fields/SKILL.md": skill("add-fields"),
-            ".agents/skills/add-fields/scripts/check.sh": "#!/bin/sh\r\necho ok\r\n",
-        },
-        default_branch_executables=[".agents/skills/add-fields/scripts/check.sh"],
-    )
-    assert fake.outcome(*RUN) == "pr-open"
-    copy = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills" / "add-fields"
-    script = copy / "scripts" / "check.sh"
-    assert script.read_bytes() == b"#!/bin/sh\r\necho ok\r\n" and os.access(script, os.X_OK)
-
-
-def test_commands_can_read_the_skill_folders(tmp_path):
-    copy = tmp_path / "logs" / "acme-analytics-12" / "skills" / "add-fields"
-    skills = [workshop.SKILLS_DIR / "workshop" / "SKILL.md", copy / "SKILL.md"]
-    job = workshop.Job(
-        "acme/analytics", 12, skills, "b", DEFAULT, tmp_path, {}, tmp_path, tmp_path, tmp_path / "x.log", None
-    )
-    allowed = workshop.claude_settings(job)["sandbox"]["filesystem"]["allowRead"]
-    assert str(copy) in allowed and str(workshop.SKILLS_DIR / "workshop") in allowed
+@pytest.mark.parametrize(
+    "files, code",
+    [
+        ({".agents/skills/add-fields/SKILL.md": skill("add-fields")}, 1),
+        ({"models/orders.sql": "select 1"}, 0),
+    ],
+    ids=["a skill folder", "only the rest of the repo"],
+)
+def test_a_tree_too_large_to_list_stops_the_run_only_in_a_skill_folder(fake, files, code):
+    fake.set(tree_truncated=True, default_branch_files=files)
+    assert fake.run(*RUN) == code
+    assert (fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []) is bool(code)
 
 
 @pytest.mark.parametrize(
@@ -678,14 +639,24 @@ def skill_names(fake) -> list[str]:
 
 
 def test_the_agent_chooses_when_no_skill_is_named(fake):
-    fake.set(read=["workshop", "remove-fields"])
+    fake.set(
+        read=["workshop", "remove-fields"],
+        default_branch_files={
+            ".agents/skills/triage/SKILL.md": "---\ndescription: Sort issues.\nname: triage\n---\n",
+            ".agents/skills/prepare-pr/SKILL.md": "---\ndescription: Prepare.\nname: prepare-pr\n---\n",
+        },
+    )
     assert fake.outcome(*ROUTED) == "pr-open"
     [agent] = fake.state["agent_runs"]
+    copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
+    assert (
+        f"- triage: Sort issues.\n    {copies / 'triage' / 'SKILL.md'}\n" in agent["prompt"]
+    )  # the repo's own
     for name in ("add-fields", "remove-fields", "add-source", "update-docs", "other"):
         path = workshop.SKILLS_DIR / name / "SKILL.md"
         assert f"- {name}: {workshop.skill_description(path)}\n" in agent["prompt"]
         assert f"{path}\n" in agent["prompt"]
-    for name in workshop.NOT_ISSUE_SKILLS:
+    for name in workshop.NOT_ISSUE_SKILLS:  # the repo's prepare-pr included
         assert name not in agent["prompt"]
     assert workshop.CHOOSE_RULES in agent["prompt"]
     assert skill_names(fake) == ["workshop", "remove-fields"]
@@ -704,50 +675,29 @@ def test_a_fix_attempt_rereads_the_skills_the_agent_chose(fake):
     assert str(workshop.SKILLS_DIR / "add-fields") not in fix
 
 
-def test_named_skills_are_not_chosen_from(fake):
+def test_named_skills_are_not_chosen_from(fake, capsys):
     assert fake.outcome(*RUN) == "pr-open"
     [agent] = fake.state["agent_runs"]
     assert workshop.CHOOSE_RULES not in agent["prompt"]
     assert str(workshop.SKILLS_DIR / "remove-fields") not in agent["prompt"]
-    assert skill_names(fake) == ["workshop", "add-fields"]
-
-
-def test_target_repo_job_skills_are_offered(fake):
-    fake.set(
-        default_branch_files={
-            ".agents/skills/triage/SKILL.md": "---\ndescription: Sort issues.\nname: triage\n---\n",
-            ".agents/skills/prepare-pr/SKILL.md": "---\ndescription: Prepare.\nname: prepare-pr\n---\n",
-        }
-    )
-    assert fake.outcome(*ROUTED) == "pr-open"
-    [agent] = fake.state["agent_runs"]
-    copies = fake.home / ".workshop" / "logs" / "acme-analytics-12" / "skills"
-    assert f"- triage: Sort issues.\n    {copies / 'triage' / 'SKILL.md'}\n" in agent["prompt"]
-    assert "prepare-pr" not in agent["prompt"]
+    assert skill_names(fake) == ["workshop", "add-fields"]  # as records before choosing list them
+    assert fake.run("score", "acme/analytics") == 0
+    assert "\n| add-fields |" in capsys.readouterr().out  # so old and new records share a row
 
 
 def test_a_run_that_reads_no_job_skill_records_none(fake, capsys):
-    fake.set(read=["workshop"])
-    assert fake.outcome(*ROUTED) == "pr-open"
-    assert "- Skills: none." in fake.summaries()[0]
-    assert fake.run("score", "acme/analytics") == 0
-    assert "\n| none |" in capsys.readouterr().out
-
-
-def test_a_read_of_a_skill_not_offered_is_not_recorded(fake):
     fake.set(
         default_branch_files={".agents/skills/add-fields/SKILL.md": "---\nname: add-fields\n---\n"},
         read=["workshop"],
-        extra_reads=[str(workshop.SKILLS_DIR / "add-fields" / "SKILL.md")],
+        extra_reads=[
+            str(workshop.SKILLS_DIR / "add-fields" / "SKILL.md")
+        ],  # replaced by the repo's: not offered
     )
     assert fake.outcome(*ROUTED) == "pr-open"
     assert skill_names(fake) == ["workshop"]
-
-
-def test_score_counts_records_that_list_workshop_first_under_the_job_skill(fake, capsys):
-    assert fake.outcome(*RUN) == "pr-open"  # skills [workshop, add-fields], as records before this change
+    assert "- Skills: none." in fake.summaries()[0]
     assert fake.run("score", "acme/analytics") == 0
-    assert "\n| add-fields |" in capsys.readouterr().out
+    assert "\n| none |" in capsys.readouterr().out
 
 
 def test_a_repo_run_works_each_queued_issue(fake):
