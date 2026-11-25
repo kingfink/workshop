@@ -44,7 +44,8 @@ jobs:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
-          if [[ "$(git ls-remote origin refs/heads/master | cut -f1)" != "$GITHUB_SHA" ]]; then
+          latest_master="$(git ls-remote origin refs/heads/master | cut -f1)"
+          if [[ "$latest_master" != "$GITHUB_SHA" ]]; then
             echo "Skipping deployment: master has advanced."
             exit 0
           fi
