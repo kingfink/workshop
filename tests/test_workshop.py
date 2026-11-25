@@ -433,6 +433,8 @@ def test_inaccessible_private_checks_escalate_once_and_wait_for_the_owner(fake, 
     }
     assert "GitHub checks: unverified at `" in fake.summaries()[0]
     assert "cannot read CI checks" in fake.summaries()[0]
+    assert fake.runs()[0]["checks_status"] == "unverified"
+    assert fake.runs()[0]["checks_reason"] == "checks-inaccessible"
     assert fake.run("run", "acme/analytics") == 0
     assert len(fake.state["agent_runs"]) == 1
     assert len(fake.summaries()) == 1

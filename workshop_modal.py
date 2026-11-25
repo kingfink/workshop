@@ -6,12 +6,17 @@ Checked against the modal client 1.6.4. Claude Code's sandbox needs the VM runti
 network namespaces.
 """
 
+import json
 import os
 import shlex
 import shutil
 import tarfile
 import tempfile
+import time
 import urllib.parse
+import urllib.request
+import uuid
+from collections import Counter
 from pathlib import Path
 
 import modal
@@ -262,8 +267,73 @@ TOOL_IMAGE = (
     .run_commands(
         f"git init -q /workshop && git -C /workshop remote add origin https://github.com/{w.own_repo()}"
     )
-    .env({"PYTHONPATH": "/workshop"})
+    .env(
+        {
+            "PYTHONPATH": "/workshop",
+            "WORKSHOP_DEPLOYMENT_SHA": os.environ.get("WORKSHOP_DEPLOYMENT_SHA")
+            or w.git("-C", w.TOOL_ROOT, "rev-parse", "HEAD").stdout.strip(),
+        }
+    )
 )
+
+
+def heartbeat(signal: str, batch_id: str) -> None:
+    """Best-effort Healthchecks pings. Never log the URL or exception: either can contain its token."""
+    url = os.environ.get("HEALTHCHECKS_PING_URL", "").strip()
+    if not url:
+        return
+    for _ in range(3):
+        try:
+            parts = urllib.parse.urlsplit(url)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                raise ValueError("invalid ping URL")
+            query = urllib.parse.parse_qsl(parts.query) + [("rid", batch_id)]
+            target = urllib.parse.urlunsplit(
+                (
+                    parts.scheme,
+                    parts.netloc,
+                    parts.path.rstrip("/") + signal,
+                    urllib.parse.urlencode(query),
+                    "",
+                )
+            )
+            with urllib.request.urlopen(urllib.request.Request(target, method="POST"), timeout=5) as response:
+                response.read(100)
+            return
+        except Exception:
+            pass
+    w.status(f"Healthchecks {signal or 'success'} ping failed after 3 attempts")
+
+
+def batch_summary(path: Path, offset: int) -> dict:
+    """Only this batch's issue records, with pointers back to the detailed records and GitHub."""
+    if not path.exists():
+        records = []
+    else:
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            records = [json.loads(line) for line in stream if line.strip()]
+    return {
+        "issues_processed": len(records),
+        "outcomes": dict(Counter(record["outcome"] for record in records)),
+        "pull_requests": len({record["pr_url"] for record in records if record.get("pr_url")}),
+        "ci_unverified": sum(record.get("checks_status") == "unverified" for record in records),
+        "jobs": [
+            {
+                key: record.get(key)
+                for key in (
+                    "repo",
+                    "issue",
+                    "finished",
+                    "outcome",
+                    "pr_url",
+                    "checks_status",
+                    "checks_reason",
+                )
+            }
+            for record in records
+        ],
+    }
 
 
 @app.function(
@@ -278,20 +348,57 @@ TOOL_IMAGE = (
 def work_queue() -> None:
     """Work each configured repo's queued issues, as `./workshop.py run <owner>/<repo> --modal` does. One repo's
     failure leaves the others to run, and fails the function at the end, so Modal shows it."""
-    w.gh("auth", "setup-git")  # git pushes with GH_TOKEN, through gh
-    failed = []
+    started = time.monotonic()
+    directory = Path.home() / ".workshop" / "logs"
+    records = directory / "runs.jsonl"
+    batch = {
+        "batch_id": str(uuid.uuid4()),
+        "modal_call_id": modal.current_function_call_id(),
+        "deployment_sha": os.environ.get("WORKSHOP_DEPLOYMENT_SHA", ""),
+        "started": w.timestamp(),
+        "status": "failed",  # success only after every repo finishes
+        "failed_repos": [],
+    }
+    offset = None
+    heartbeat("/start", batch["batch_id"])
     try:
-        for repo in filter(None, (name.strip() for name in os.environ["WORKSHOP_REPOS"].split(","))):
+        offset = records.stat().st_size if records.exists() else 0
+        repos = list(
+            dict.fromkeys(filter(None, (name.strip() for name in os.environ["WORKSHOP_REPOS"].split(","))))
+        )
+        if not repos:
+            raise w.ToolError("WORKSHOP_REPOS must name at least one repo")
+        batch["repos"] = repos
+        event = {**batch, "event": "batch_start", "status": "running"}
+        w.save_record(event, directory / "batches.jsonl")
+        w.status(json.dumps(event))
+        w.gh("auth", "setup-git")  # git pushes with GH_TOKEN, through gh
+        for repo in repos:
             try:
                 code = w.main(["run", repo, "--modal"])
             except Exception as exc:  # not a ToolError: main handles those
                 w.status(f"error: {repo}: {exc!r}")
                 code = 1
             if code:
-                failed.append(repo)
+                batch["failed_repos"].append(repo)
             if code == 130:  # interrupted, as when Modal stops the function
                 break
+        if batch["failed_repos"]:
+            raise RuntimeError(f"runs failed in {', '.join(batch['failed_repos'])}")
+        batch["status"] = "succeeded"
+    except BaseException as exc:
+        batch["error_type"] = type(exc).__name__
+        raise
     finally:
-        logs.commit()
-    if failed:
-        raise RuntimeError(f"runs failed in {', '.join(failed)}")
+        batch.update(event="batch_end", finished=w.timestamp(), seconds=round(time.monotonic() - started))
+        try:
+            if offset is not None:
+                batch.update(batch_summary(records, offset))
+            w.save_record(batch, directory / "batches.jsonl")
+            logs.commit()
+        except BaseException as exc:
+            batch.update(status="failed", error_type=type(exc).__name__, logs_saved=False)
+            raise
+        finally:
+            w.status(json.dumps(batch))
+            heartbeat("" if batch["status"] == "succeeded" else "/fail", batch["batch_id"])
