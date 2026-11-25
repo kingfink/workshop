@@ -262,7 +262,6 @@ def agent(state):
             "num_turns": 3,
             "total_cost_usd": 0.25,
             "usage": {"output_tokens": 100},
-            "permission_denials": [{"tool_name": "WebFetch"}],
         },
     ):
         print(json.dumps(event), flush=True)

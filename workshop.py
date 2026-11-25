@@ -424,16 +424,7 @@ class Job:
     evidence_dir: Path | None = None  # additional read-only logs supplied by the tool
     budget: float = 0.0  # API-equivalent dollars for all of this run's agent invocations; 0 for no cap
     choose: bool = False  # `skills` are offered: the agent reads workshop and chooses the job skills that fit
-    validation: dict = field(
-        default_factory=lambda: {
-            "source": "github-checks",
-            "status": "unverified",
-            "reason": "not-checked",
-            "head_sha": "",
-            "observed_at": "",
-            "checks": [],
-        }
-    )
+    validation: dict = field(default_factory=dict)  # the latest wait_for_checks result
 
     def run_agent(self, prompt: str) -> int:
         status(f"running the agent (log: {self.log_path})")
@@ -695,7 +686,6 @@ def agent_usage(log_path: Path) -> dict:
         "cost_usd": 0.0,
         "tokens": dict.fromkeys(TOKENS, 0),
         "tool_calls": Counter(),
-        "denied_tool_calls": Counter(),
     }
     for event in log_events(log_path):
         if event.get("type") == "system" and event.get("subtype") == "init":
@@ -712,8 +702,6 @@ def agent_usage(log_path: Path) -> dict:
             usage["cost_usd"] += event.get("total_cost_usd", 0.0)
             for name, key in TOKENS.items():
                 usage["tokens"][name] += event.get("usage", {}).get(key, 0)
-            for denial in event.get("permission_denials", []):
-                usage["denied_tool_calls"][denial.get("tool_name", "")] += 1
     usage["cost_usd"] = round(usage["cost_usd"], 4)
     return usage
 
@@ -942,27 +930,20 @@ def pr_checks(repo: str, pr: int) -> tuple[str, list[dict]]:
 
 
 def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous_head: str = "") -> dict:
-    """Record validation of one commit. No checks or only skipped checks do not establish a pass."""
+    """The checks of one commit, once they finish. No checks or only skipped checks do not establish a pass."""
     start = time.monotonic()
     head_seen = False
     while True:
         observed_head, checks = pr_checks(repo, pr)
         head = head or observed_head
-        result = {
-            "source": "github-checks",
-            "status": "unverified",
-            "reason": "",
-            "head_sha": head,
-            "observed_at": timestamp(),
-            "checks": checks,
-        }
+        result = {"status": "unverified", "reason": "", "head_sha": head, "checks": checks}
         if observed_head != head:
             elapsed = time.monotonic() - start
             grace = min(2 * CHECKS_POLL_S, timeout_s)
             if not head_seen and previous_head and observed_head == previous_head and elapsed < grace:
                 time.sleep(min(CHECKS_POLL_S, grace - elapsed))
                 continue
-            return {**result, "reason": "head-changed", "observed_head_sha": observed_head, "checks": []}
+            return {**result, "reason": "head-changed", "checks": []}
         head_seen = True
         elapsed = time.monotonic() - start
         failing = any(check["bucket"] == "fail" for check in checks)
@@ -1057,15 +1038,6 @@ def prove(job: Job, pr: dict) -> Outcome:
     while True:
         status(f"waiting for checks on {pr['url']}")
         started = time.monotonic()
-        # Clear the previous round's result before observing a new commit, even if the GitHub request fails.
-        job.validation = {
-            "source": "github-checks",
-            "status": "unverified",
-            "reason": "not-checked",
-            "head_sha": job.pushed,
-            "observed_at": "",
-            "checks": [],
-        }
         job.validation = wait_for_checks(job.repo, pr["number"], job.args.checks_timeout, job.pushed)
         job.checks_s += time.monotonic() - started
         state, reason = job.validation["status"], job.validation["reason"]
@@ -1117,14 +1089,10 @@ def summary(outcome: Outcome, job: Job, record: dict) -> str:
     if outcome.pr_url:
         lines += [
             f"- Pull request: {outcome.pr_url}",
+            f"- GitHub checks: {job.validation['status']} at `{job.validation['head_sha'][:12]}`.",
             f"- Fix attempts: {outcome.fix_attempts} of {job.args.max_fix_attempts}",
         ]
     lines.append(f"- Agent time: {duration(job.agent_s)}. API-equivalent cost: ${record['cost_usd']:.2f}.")
-    validation = record["validation"]
-    revision = f" at `{validation['head_sha'][:12]}`" if validation["head_sha"] else ""
-    lines.append(
-        f"- GitHub checks: {validation['status']}{revision} ({validation['reason'].replace('-', ' ')})."
-    )
     # The run record for `workshop score`, not shown. With no "<" or ">", nothing in it can end the comment early.
     hidden = json.dumps(record).replace("<", "\\u003c").replace(">", "\\u003e")
     footer = f"\n\n<!-- workshop-run: {hidden} -->\n"
@@ -1171,7 +1139,6 @@ def run_record(job: Job, outcome: Outcome | None, error: str, total_s: float) ->
         "pr_url": outcome.pr_url if outcome else "",
         "pushed": job.pushed,
         "kind": job.kind,
-        "validation": job.validation,
         "seconds": {"total": round(total_s), "agent": round(job.agent_s), "checks": round(job.checks_s)},
         **agent_usage(job.log_path),
     }
@@ -1307,7 +1274,7 @@ def work(repo: str, issue: int, names: list[str] | None, args: argparse.Namespac
 # The tool writes the record last in its comment. The agent's note comes before it, so a record there is not counted.
 RECORD = re.compile(r"<!-- workshop-run: ([^<>]*) -->\s*\Z")
 ENDINGS = ("merged as-is", "merged after changes", "closed unmerged", "open", "escalated")
-COUNTED = ("jobs", *ENDINGS, "runs", "questions", "fix", "denied")
+COUNTED = ("jobs", *ENDINGS, "runs", "questions", "fix")
 
 
 def job_records(repo: str, since: str) -> list[list[dict]]:
@@ -1366,16 +1333,13 @@ def cmd_score(args: argparse.Namespace) -> int:
         row = rows.setdefault(skills, Counter())
         row["jobs"] += 1
         row[job_ending(runs)] += 1
-        row["ci_" + runs[-1].get("validation", {}).get("status", "unknown")] += 1
         row["runs"] += len(runs)
         row["questions"] += sum(run["outcome"] == "needs-info" for run in runs)
         row["fix"] += sum(run["fix_attempts"] for run in runs)
-        row["denied"] += sum(sum(run["denied_tool_calls"].values()) for run in runs)
         row["cost"] += sum(run["cost_usd"] for run in runs)
     if not rows:
         status(f"no run records in {args.repo}{f' since {args.since}' if args.since else ''}")
         return 0
-    validations = ("passed", "failed", "unverified", "unknown")
     headers = [
         "Skills",
         "Jobs",
@@ -1383,11 +1347,9 @@ def cmd_score(args: argparse.Namespace) -> int:
         "Runs",
         "Questions",
         "Fix attempts",
-        "Denied calls",
         "API-equivalent cost",
         "Per merged PR",
     ]
-    headers += [f"CI {state}" for state in validations]
     table = []
     for skills, row in sorted(rows.items()):
         merged = row["merged as-is"] + row["merged after changes"]
@@ -1397,7 +1359,6 @@ def cmd_score(args: argparse.Namespace) -> int:
                 *(row[key] for key in COUNTED),
                 f"${row['cost']:.2f}",
                 f"${row['cost'] / merged:.2f}" if merged else "-",
-                *(row["ci_" + state] for state in validations),
             ]
         )
     print(markdown_table(headers, table))

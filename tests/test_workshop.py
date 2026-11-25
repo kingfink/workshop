@@ -238,6 +238,7 @@ def test_reruns(fake):
     assert fake.outcome(*RUN) == "needs-info"
     [question] = fake.state["issue"]["comments"]  # the question is in the run's one comment
     assert "\n\nWhich one?\n" in question["body"]
+    assert "GitHub checks" not in question["body"]  # there is no pull request
     assert fake.calls("issue", "edit", "--add-label=workshop:working", "--remove-label=workshop:queued")
     assert fake.calls("reset", "--hard", DEFAULT)
 
@@ -276,11 +277,11 @@ def test_fix_loop(fake):
     ]
     assert (run["agent_version"], run["model"], run["turns"]) == ("0.0.1", "fake-model", 6)
     assert run["tokens"]["output"] == 200
-    assert run["tool_calls"] == {"Bash": 2, "Read": 4} and run["denied_tool_calls"] == {"WebFetch": 2}
+    assert run["tool_calls"] == {"Bash": 2, "Read": 4}
     assert set(run["seconds"]) == {"total", "agent", "checks"}
     assert run["pr_url"] == "https://github.com/acme/analytics/pull/100" and run["pushed"] == f"{2:040x}"
-    assert run["validation"]["status"] == "passed" and run["validation"]["head_sha"] == run["pushed"]
-    assert run["validation"]["observed_at"] and run["validation"]["checks"][0]["link"]
+    assert "validation" not in run and "denied_tool_calls" not in run  # denied calls stay in the agent's log
+    assert f"- GitHub checks: passed at `{run['pushed'][:12]}`." in fake.summaries()[0]
     [hidden] = workshop.RECORD.findall(fake.summaries()[0])  # the copy for `workshop score`
     assert json.loads(hidden)["pushed"] == run["pushed"]
 
@@ -317,7 +318,7 @@ def test_score(fake, capsys, pr, ending):
     assert (scores["Runs"], scores["Questions"], scores["Fix attempts"]) == ("2", "1", "1")
     assert scores["API-equivalent cost"] == "$0.75"  # three agent runs
     assert scores["Per merged PR"] == ("$0.75" if ending.startswith("Merged") else "-")
-    assert scores["CI passed"] == "1" and scores["CI unknown"] == "0"
+    assert not [header for header in scores if header.startswith(("CI", "Denied"))]
 
     assert fake.run("score", "acme/analytics", "--since", "2999-01-01") == 0
     assert "no run records" in capsys.readouterr().err
@@ -364,8 +365,7 @@ def test_check_end_states(fake, checks, options, outcome, reason, validation):
     fake.set(checks=checks)
     assert fake.outcome(*RUN, *options) == outcome
     assert reason in fake.summaries()[0]
-    assert fake.runs()[0]["validation"]["status"] == validation
-    assert f"GitHub checks: {validation}" in fake.summaries()[0]
+    assert f"GitHub checks: {validation} at `" in fake.summaries()[0]
 
 
 def test_agent_timeout(fake):
@@ -439,7 +439,6 @@ FORGED = {
     "skills": [{"name": "workshop"}, {"name": "add-fields"}],
     "outcome": "pr-open",
     "fix_attempts": 0,
-    "denied_tool_calls": {},
     "cost_usd": -100.0,
 }
 
@@ -538,7 +537,7 @@ def test_validation_records_the_observed_commit(monkeypatch, rollup, expected, r
     monkeypatch.setattr(workshop, "gh_json", lambda *args: {"headRefOid": "abc", "statusCheckRollup": rollup})
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "abc")
     assert (result["status"], result["reason"], result["head_sha"]) == (expected, reason, "abc")
-    assert len(result["checks"]) == len(rollup) and result["observed_at"]
+    assert len(result["checks"]) == len(rollup)
 
 
 def test_passing_checks_on_a_different_commit_are_unverified(monkeypatch):
@@ -551,52 +550,37 @@ def test_passing_checks_on_a_different_commit_are_unverified(monkeypatch):
         },
     )
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "pushed")
-    assert (result["status"], result["reason"], result["head_sha"]) == (
+    assert (result["status"], result["reason"], result["head_sha"], result["checks"]) == (
         "unverified",
         "head-changed",
         "pushed",
+        [],
     )
-    assert result["observed_head_sha"] == "new" and result["checks"] == []
 
 
 @pytest.mark.parametrize(
-    "heads, status, observed",
+    "heads, status, waited",
     [
-        (["old", "pushed"], "passed", None),
-        (["old", "third"], "unverified", "third"),
-        (["old", "old", "old"], "unverified", "old"),
+        (["old", "pushed"], "passed", 10),
+        (["old", "third"], "unverified", 10),
+        (["old", "old", "old"], "unverified", 20),
     ],
 )
-def test_previous_head_grace_only_waits_for_the_known_push(monkeypatch, heads, status, observed):
+def test_previous_head_grace_only_waits_for_the_known_push(monkeypatch, heads, status, waited):
     clock = [0]
     remaining = iter(heads)
     monkeypatch.setattr(workshop.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(workshop.time, "sleep", lambda n: clock.__setitem__(0, clock[0] + n))
     monkeypatch.setattr(workshop, "pr_checks", lambda *a: (next(remaining), [{"bucket": "pass"}]))
     result = workshop.wait_for_checks("acme/analytics", 1, 60, "pushed", "old")
-    assert result["status"] == status
-    assert result.get("observed_head_sha") == observed
-    assert clock[0] == (20 if observed == "old" else 10)
-
-
-def test_score_does_not_infer_validation_for_old_records(fake, capsys):
-    assert fake.outcome(*RUN) == "pr-open"
-    state = fake.state
-    comment = state["issue"]["comments"][0]
-    found = workshop.RECORD.search(comment["body"])
-    record = json.loads(found[1])
-    record.pop("validation")
-    comment["body"] = comment["body"][: found.start()] + f"<!-- workshop-run: {json.dumps(record)} -->"
-    fake.set(**state)
-    scores = score_row(fake, capsys)
-    assert scores["CI unknown"] == "1" and scores["CI passed"] == "0"
+    assert result["status"] == status and clock[0] == waited
 
 
 def test_head_change_escalates_without_attempting_a_fix(fake, monkeypatch):
     monkeypatch.setattr(workshop, "pr_checks", lambda *args: ("different", [{"bucket": "pass"}]))
     assert fake.outcome(*RUN) == "escalated"
     assert len(fake.state["agent_runs"]) == 1
-    assert fake.runs()[0]["validation"]["reason"] == "head-changed"
+    assert "the pull request head changed" in fake.summaries()[0]
 
 
 def test_head_change_during_pagination_discards_the_checks(monkeypatch):
@@ -612,21 +596,6 @@ def test_head_change_during_pagination_discards_the_checks(monkeypatch):
     monkeypatch.setattr(workshop, "gh_json", lambda *args: next(responses))
     result = workshop.wait_for_checks("acme/analytics", 1, 0, "old")
     assert result["reason"] == "head-changed" and result["checks"] == []
-
-
-def test_large_validation_record_leaves_room_for_the_note(fake, monkeypatch):
-    fake.set(checks=[{f"check-{i}": "pass" for i in range(100)}])
-    original = workshop.handoff_text
-    monkeypatch.setattr(
-        workshop,
-        "handoff_text",
-        lambda job, name: "x" * 100_000 if name == "comment.md" else original(job, name),
-    )
-    assert fake.outcome(*RUN) == "pr-open"
-    [comment] = fake.summaries()
-    assert len(comment) <= 65_536 and "(cut here" in comment
-    record = json.loads(workshop.RECORD.search(comment)[1])
-    assert len(record["validation"]["checks"]) == 100
 
 
 # --- choosing a skill, and runs of a whole repo
