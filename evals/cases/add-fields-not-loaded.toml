@@ -2,7 +2,7 @@
 skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
-question = "say that no loaded table has a phone number"
+criterion = "say that no loaded table has a phone number"
 
 [issue]
 title = "Add phone number to dim_customers"

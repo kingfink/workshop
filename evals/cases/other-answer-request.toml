@@ -3,7 +3,7 @@ skills = ["other"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true
-question = "say that the request asks for an answer rather than a change to the repository"
+criterion = "say that the request asks for an answer rather than a change to the repository"
 
 [issue]
 title = "How many customers have never ordered?"

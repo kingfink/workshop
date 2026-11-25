@@ -3,7 +3,7 @@ skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true
-question = "ask which source to use for the customer's email address, offering both `email` and `contact_email` as options"
+criterion = "ask which source to use for the customer's email address, offering both `email` and `contact_email` as options"
 
 [issue]
 title = "Add plan tier and customer email to dim_customers"

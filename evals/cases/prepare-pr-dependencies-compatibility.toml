@@ -2,4 +2,5 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "dependency-update"
 expect = "ready"
+checks = ["check"]
 criterion = "describe reproducing the incompatible uppercase keyword failure, changing the caller to the new API, and rerunning the tests successfully without weakening them"

@@ -15,7 +15,7 @@ package = false
 
 [tool.ruff]
 line-length = 110
-extend-exclude = ["evals/fixtures"]
+extend-exclude = ["evals/fixtures/*/repo"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B"]

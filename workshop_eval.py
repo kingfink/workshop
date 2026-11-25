@@ -1,6 +1,7 @@
 """workshop eval: run the agent on the cases in evals/ and grade what it did. It publishes nothing.
 
-Only `./workshop.py eval` imports this. The test project and its grading are dbt on DuckDB.
+Only `./workshop.py eval` imports this. It knows no fixture. Each case names one in evals/fixtures/: its `repo/` is the
+target repo, and its `fixture.py`, if any, sets up each run and provides the case's checks. See fixture_command.
 """
 
 import argparse
@@ -8,18 +9,21 @@ import copy
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tomllib
-from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 
+import workshop_inspect
+import workshop_prepare
 from workshop import (
-    FAILED_LOG_CHARS,
+    SKILLS_DIR,
     SMALL_MODEL,
     TOOL_ROOT,
     Job,
     ToolError,
     agent_usage,
+    budget_left,
     duration,
     find_skills,
     fix_prompt,
@@ -42,50 +46,13 @@ from workshop import (
 EVALS_DIR = TOOL_ROOT / "evals"
 EVAL_BRANCH = "workshop/eval"
 EVAL_TOOLS = "Bash,Read,Edit,Write"
-TOOL_CODE = (
-    "workshop.py",
-    "workshop_eval.py",
-    "workshop_inspect.py",
-    "workshop_prepare.py",
-    "workshop_prepare_eval.py",
-)
-LOAD = """import duckdb, pathlib, sys
-con = duckdb.connect(sys.argv[1])
-con.execute("create schema raw")
-for csv in sorted(pathlib.Path(sys.argv[2]).glob("*.csv")):
-    con.execute(f"create table raw.{csv.stem} as select * from read_csv(?, header = true)", [str(csv)])
-"""
-QUERY = """import duckdb, json, sys
-print(json.dumps(duckdb.connect(sys.argv[1], read_only=True).execute(sys.argv[2]).fetchall(), default=str))
-"""
-GRADE_PROFILE = """fixture:
-  target: grade
-  outputs:
-    grade:
-      type: duckdb
-      path: {path}
-      threads: 1
-      settings:
-        enable_external_access: false
-"""
-
-
-@dataclass
-class Fixture:
-    """A test project: evals/fixtures/<name>/repo is copied for each run as the target repo, and raw/ is its data."""
-
-    name: str
-    repo: Path
-    venv: Path  # for loading and grading, outside anything the agent can write
-    database: Path  # the raw data, loaded
-    baseline: dict  # complete model outputs, schemas and test definitions from the unchanged project
+TOOL_CODE = ("workshop.py", "workshop_eval.py", "workshop_inspect.py", "workshop_prepare.py")
+IDENTITY = ("-c", "user.name=workshop", "-c", "user.email=workshop@localhost")  # for the tool's own commits
+SKIPPED = {"passed": False, "why": "skipped: the budget is spent", "cost_usd": 0.0, "seconds": {"agent": 0}}
 
 
 def load_cases(skill: str | None) -> list[dict]:
-    cases = [
-        {"name": path.stem, **tomllib.loads(path.read_text())}
-        for path in sorted(EVALS_DIR.glob("cases/*.toml"))
-    ]
+    cases = [{"name": p.stem, **tomllib.loads(p.read_text())} for p in sorted(EVALS_DIR.glob("cases/*.toml"))]
     return [case for case in cases if skill is None or skill in case["skills"]]
 
 
@@ -96,9 +63,8 @@ def select_cases(cases: list[dict], names: list[str], changed: set[str] | None) 
     grading.
     """
     if unknown := sorted(set(names) - {case["name"] for case in cases}):
-        raise ToolError(
-            f"unknown case {', '.join(unknown)}; the cases are: {', '.join(case['name'] for case in cases)}"
-        )
+        known = ", ".join(case["name"] for case in cases)
+        raise ToolError(f"unknown case {', '.join(unknown)}; the cases are: {known}")
 
     def inputs_changed(case: dict) -> bool:
         skills = case["skills"] + ([] if case.get("kind") in ("inspection", "preparation") else ["workshop"])
@@ -124,119 +90,23 @@ def changed_files(root: Path = TOOL_ROOT) -> set[str]:
     return {*changed, *git("-C", root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()}
 
 
-def prepare_fixture(name: str, work: Path) -> Fixture:
-    source = EVALS_DIR / "fixtures" / name
-    status(f"preparing the {name} test project in {work}")
-    shutil.rmtree(work, ignore_errors=True)
-    venv, database = work / "venv", work / "fixture.duckdb"  # named as in the project: "raw" is the schema
-    sh(
-        ["uv", "sync", "--frozen", "--quiet"],
-        cwd=source / "repo",
-        env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(venv)},
-    )
-    sh([venv / "bin" / "python", "-c", LOAD, database, source / "raw"])
-    fixture = Fixture(name, source / "repo", venv, database, {})
-    base = work / "base"
-    shutil.copytree(fixture.repo, base)
-    built, log = dbt_build(fixture, base)
-    if not built:
-        raise ToolError(f"the unchanged {name} test project does not build:\n{log}")
-    fixture.baseline = snapshot(fixture, base)
-    return fixture
+def commit(path: Path, message: str) -> None:
+    git("-C", path, "add", "--all")
+    git("-C", path, *IDENTITY, "commit", "--quiet", "-m", message)
 
 
-def dbt_build(fixture: Fixture, project: Path) -> tuple[bool, str]:
-    """Build `project` from a fresh copy of the raw data. This runs outside the sandbox, so DuckDB gets no file or
-    network access, and only SQL and YAML the agent wrote are built: see grade."""
-    shutil.copy(fixture.database, project / "fixture.duckdb")
-    profiles = project.with_name(project.name + "-profiles")
-    profiles.mkdir(exist_ok=True)
-    (profiles / "profiles.yml").write_text(
-        GRADE_PROFILE.format(path=json.dumps(str(project / "fixture.duckdb")))
-    )
-    env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "DBT_SEND_ANONYMOUS_USAGE_STATS": "false"}
-    result = sh(
-        [fixture.venv / "bin" / "dbt", "build", "--project-dir", project, "--profiles-dir", profiles],
-        cwd=project,
-        env=env,
-        check=False,
-    )
-    return result.returncode == 0, (result.stdout + result.stderr)[-FAILED_LOG_CHARS:]
+def fixture_command(command: str, case: dict, run_dir: Path, cache: Path) -> subprocess.CompletedProcess:
+    """Run a command of the case's fixture.py, outside the agent's sandbox: `setup` before the agent, or a check after.
 
-
-def query(fixture: Fixture, project: Path, sql: str) -> list | str:
-    """The rows `sql` returns from the project's built database, or the error."""
-    result = sh([fixture.venv / "bin" / "python", "-c", QUERY, project / "fixture.duckdb", sql], check=False)
-    return json.loads(result.stdout) if result.returncode == 0 else result.stderr.strip().splitlines()[-1]
-
-
-def snapshot(fixture: Fixture, project: Path) -> dict:
-    """The small fixture's complete model outputs and tests, read independently of the agent."""
-
-    def rows(sql):
-        result = query(fixture, project, sql)
-        if isinstance(result, str):
-            raise ToolError(f"could not inspect the built fixture: {result}")
-        return result
-
-    tables = {}
-    for table, column, kind in rows(
-        "select table_name, column_name, data_type from information_schema.columns "
-        "where table_schema = 'main' order by table_name, ordinal_position"
-    ):
-        tables.setdefault(table, {"columns": {}, "rows": []})["columns"][column] = kind
-    for table, data in tables.items():
-        quoted = '"' + table.replace('"', '""') + '"'
-        data["rows"] = rows(f"select * from main.{quoted}")
-    manifest = json.loads((project / "target" / "manifest.json").read_text())
-    tests = [
-        {
-            "model": node.get("attached_node") or "",
-            "depends_on": sorted(node["depends_on"]["nodes"]),
-            "column": node.get("column_name"),
-            "definition": node.get("test_metadata"),
-            "code": node.get("raw_code"),
-            "config": node["config"],
-        }
-        for node in manifest["nodes"].values()
-        if node["resource_type"] == "test"
-    ]
-    return {"tables": tables, "tests": tests}
-
-
-def preservation_error(before: dict, after: dict, case: dict) -> str:
-    """Only the case's declared columns may change. Compare rows with their duplicate counts intact."""
-    if before["tables"].keys() != after["tables"].keys():
-        return "added or removed a model"
-    removed = case.get("remove_columns", {})
-    for table, original in before["tables"].items():
-        actual = after["tables"][table]
-        kept = [name for name in original["columns"] if name not in removed.get(table, [])]
-        expected = {name: original["columns"][name] for name in kept}
-        expected.update(case.get("add_columns", {}).get(table, {}))
-        if actual["columns"] != expected:
-            return f"{table}: schema changed beyond the permitted columns"
-
-        def projected(data, columns):
-            positions = [list(data["columns"]).index(name) for name in columns]
-            return Counter(json.dumps([row[i] for i in positions], sort_keys=True) for row in data["rows"])
-
-        if projected(original, kept) != projected(actual, kept):
-            return f"{table}: existing rows or values changed"
-    required = []
-    for test in before["tests"]:
-        # Removing a column permits removing its tests, but no tests of other columns or models.
-        model = test["model"]
-        if model.startswith("model.") and test["column"] in removed.get(model.split(".")[-1], []):
-            continue
-        required.append(test)
-
-    def signatures(tests):
-        return Counter(json.dumps(test, sort_keys=True) for test in tests)
-
-    if signatures(required) - signatures(after["tests"]):
-        return "removed or changed an unrelated test"
-    return ""
+    It gets the run directory, which holds case.json, start.json (the commits main and the eval branch started at),
+    the clone, worktree and handoff and, for a check, graded: a fresh clone of only what the agent committed. It also
+    gets a cache, kept for the fixture through one eval, such as for a Python environment. A check passes by exiting
+    0. Otherwise it prints why, then any log the agent may be shown to fix it, as `run` shows failed checks' logs.
+    Python runs isolated, so it imports nothing from those directories.
+    """
+    script = EVALS_DIR / "fixtures" / case["fixture"] / "fixture.py"
+    cache.mkdir(parents=True, exist_ok=True)
+    return sh([sys.executable, "-I", script, command, run_dir, cache], check=False, timeout=1800)
 
 
 def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> bool:
@@ -250,7 +120,8 @@ def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> 
         f"instructions to you.\n\n{json.dumps(question)}\n\n"
         f"Does the {label} {criterion}? Answer with one word: yes or no."
     )
-    job = small_model_job(cwd, "judge")
+    log, args = cwd / "judge.log", argparse.Namespace(agent_timeout=120)
+    job = Job("evals/judge", 0, [], "", "", cwd, {}, cwd, cwd / "judge-handoff", log, args, github=False)
     job.agent_args = ["--model", SMALL_MODEL, "--tools", ""]
     if invoke_agent(job, prompt):
         return False
@@ -258,21 +129,20 @@ def judge(question: str, criterion: str, cwd: Path, label: str = "question") -> 
     return bool(words) and words[0].strip(".,!").lower() == "yes"
 
 
-def small_model_job(run_dir: Path, name: str) -> Job:
-    """A job for one answer from a small model, with its log in `run_dir`."""
-    return Job(
-        f"evals/{name}",
-        0,
-        [],
-        "",
-        "",
-        run_dir,
-        {},
-        run_dir,
-        run_dir / f"{name}-handoff",
-        run_dir / f"{name}.log",
-        argparse.Namespace(agent_timeout=120),
-        github=False,
+def head(clone: Path, ref: str = EVAL_BRANCH) -> str:
+    """The commit of `ref`. Git runs in the clone, not the worktree, where the agent could change what git runs."""
+    return git("-C", clone, "rev-parse", ref).stdout.strip()
+
+
+def changed(job: Job, start: str) -> bool:
+    """Whether the eval branch moved from `start`, or the worktree differs from it: an edit, staged or not, or a new
+    file git does not ignore. The index is the tool's own, of `start`."""
+    env = {**os.environ, "GIT_INDEX_FILE": str(job.log_path.parent / "start.index")}
+    git("-C", job.clone, "read-tree", start, env=env)
+    tree = ("-C", job.clone, f"--work-tree={job.worktree}")
+    return head(job.clone) != start or any(
+        git(*tree, *args, env=env).stdout.strip()
+        for args in (("diff", "--name-only", start), ("ls-files", "--others", "--exclude-standard"))
     )
 
 
@@ -284,95 +154,149 @@ def issue_thread(case: dict) -> str:
     return "\n".join(thread)
 
 
-def grade(job: Job, case: dict, fixture: Fixture) -> tuple[bool, str, str]:
-    """Whether the agent did what the case expects. Returns (passed, why, the log if the build failed).
-
-    Git runs in the clone, not the worktree, where the agent could change what git runs.
-    """
-    question = handoff_text(job, "question.md")
-    changed = git("-C", job.clone, "diff", "--name-only", f"main...{EVAL_BRANCH}").stdout.split()
-    if case["expect"] == "question":
-        if not question:
-            return (
-                False,
-                "changed files instead of asking" if changed else "neither asked nor changed anything",
-                "",
-            )
-        if case.get("unchanged"):
-            worktree_args = ("-C", job.clone, f"--work-tree={job.worktree}")
-            edited = git(*worktree_args, "diff", "--name-only", "main").stdout.strip()
-            added = git(*worktree_args, "ls-files", "--others", "--exclude-standard").stdout.strip()
-            if changed or edited or added:
-                return False, "changed files before asking", ""
-        if "question" not in case:
-            return True, "asked", ""
-        good = judge(question, case["question"], job.clone.parent)  # not where the agent can write
-        return good, "asked" if good else f"asked, but the question does not {case['question']}", ""
-    if question:
-        return False, f"asked instead: {question.splitlines()[0][:120]}", ""
-    if not changed:
-        return False, "committed nothing", ""
-    pull_request = handoff_text(job, "pull-request.md")
-    if not pull_request:
-        return False, "wrote no pull-request.md", ""
-    if outside := [
-        path for path in changed if not (path.startswith("models/") and path.endswith((".sql", ".yml")))
-    ]:
-        return False, f"changed files outside models/: {', '.join(outside)}", ""
-    project = job.clone.with_name("graded")
-    shutil.rmtree(project, ignore_errors=True)
-    git("clone", "--quiet", "--branch", EVAL_BRANCH, job.clone, project)  # only what the agent committed
-    if links := [str(path.relative_to(project)) for path in project.rglob("*") if path.is_symlink()]:
-        return False, f"committed links, which the build would follow: {', '.join(links)}", ""
-    built, log = dbt_build(fixture, project)
-    if not built:
-        return False, "dbt build failed", log
-    if error := preservation_error(fixture.baseline, snapshot(fixture, project), case):
-        return False, error, ""
-    for check in case.get("queries", []):
-        if (rows := query(fixture, project, check["sql"])) != check["rows"]:
-            return False, f"`{check['sql']}` returned {rows}", ""
-    if case.get("kind_line") and not pull_request_kind(pull_request.partition("\n")[2]):
-        return False, "wrote no Kind line in pull-request.md", ""
-    if (criterion := case.get("pull_request")) and not judge(
-        pull_request, criterion, job.clone.parent, "pull request"
-    ):
-        return False, f"the pull request does not {criterion}", ""
-    return True, "changed it, and every check passes", ""
+def issue_end(job: Job, start: dict) -> tuple[str, str, str]:
+    """How an issue job ended, what the agent's handoff for that is called, and its text."""
+    if question := handoff_text(job, "question.md"):
+        return "question", "question", question
+    if head(job.clone) == start["branch"]:
+        return "neither a question nor commits", "", ""
+    if pull_request := handoff_text(job, "pull-request.md"):
+        return "pull-request", "pull request", pull_request
+    return "commits with no pull-request.md", "", ""
 
 
-def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namespace, budget: float) -> dict:
-    """One run of one case, spending at most `budget`. The layout is a real run's: a clone, and a worktree."""
+def run_issue(case: dict, job: Job, start: dict) -> tuple[str, str, str]:
+    job.run_agent(initial_prompt(job, issue_thread(case)))
+    return issue_end(job, start)
+
+
+def run_inspection(case: dict, job: Job, start: dict) -> tuple[str, str, str]:
+    """Assess the case's observations, saved as `inspect` saves what it collects, and check any issue it proposes."""
+    run_dir = job.log_path.parent
+    evidence = copy.deepcopy(case["observations"])
+    (run_dir / "logs").mkdir()
+    (run_dir / "history").mkdir()
+    for index, item in enumerate(evidence["functions"]):
+        calls = item["calls"]
+        workshop_inspect.save_call_history(item, calls, run_dir / "history" / f"{index:03}.jsonl")
+        fixtures = item.get("log_files", [{"scope": "function", "text": item.pop("logs", "")}])
+        for number, entry in enumerate(fixtures):
+            path = run_dir / "logs" / f"{index:03}-{number:03}.log"
+            logs = entry.pop("text")
+            logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
+            path.write_text(logs, encoding="utf-8")
+            entry["path"] = str(path)
+        item["log_files"] = fixtures
+        workshop_inspect.list_calls(item, calls)
+    if "issues" in case:
+        (run_dir / workshop_inspect.ISSUES_FILE).write_text(json.dumps(case["issues"], indent=2))
+    result = workshop_inspect.assess(job, evidence)
+    if result["status"] == case["expect"] and "expect_issue" in case:
+        lines = workshop_inspect.issue_lines(job.repo, result, case["issues"], evidence, job.worktree)
+        wanted = "Create the issue:" if case["expect_issue"] == "new" else f"Matches #{case['expect_issue']} "
+        if not lines or not lines[0].startswith(wanted):
+            shown = [line for line in lines if line and not line.startswith("Create the issue:")] or lines[:1]
+            raise ToolError(f"issue: {' '.join(shown) or 'none'}")
+        if any(value in json.dumps(result.get("issue")) for value in case.get("forbidden", [])):
+            raise ToolError("issue text includes a forbidden value")
+    return result["status"], "assessment", json.dumps(result)
+
+
+def run_preparation(case: dict, job: Job, start: dict) -> tuple[str, str, str]:
+    """Assess the case's evidence for a batch, or prepare the PR the fixture's setup committed, as `prepare` would."""
+    if job.inspection:
+        evidence = copy.deepcopy(case["evidence"])
+        (job.log_path.parent / "logs").mkdir()
+        for item in evidence:
+            if logs := item.get("failed_logs"):
+                path = job.log_path.parent / "logs" / f"{item['number']}.log"
+                logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
+                path.write_text(logs + case.get("log_tail", ""), encoding="utf-8")
+                item["failed_logs"] = f"Full failed-job log: {path}"
+        result = workshop_prepare.assess(job, evidence)
+        ends = {result[item["number"]]["status"] for item in evidence}
+        if case.get("shared") and len({item["reason"] for item in result.values()}) > 1:
+            ends.add("separate reasons")
+        return ", ".join(sorted(ends)), "preparation report", json.dumps(result)
+    evidence = {
+        "number": 1,
+        "request": case.get("request", {}),
+        "feedback": case.get("feedback", []),
+        "checks": [],
+        "merge_conflicts": bool(case.get("conflict")),
+        "diff": git("-C", job.clone, "diff", f"{start['main']}...{start['branch']}").stdout,
+    }
+    code = job.run_agent(workshop_prepare.repair_prompt(job, evidence, "Review this PR and prepare it."))
+    result = workshop_prepare.preparation(job)
+    if code == 0 and result["status"] == "ready":  # what the tool's push requires before it publishes
+        current = head(job.clone)
+        if changed(job, current):
+            raise ToolError("the agent left uncommitted changes")
+        ancestors = [start["branch"], *([start["main"]] if current != start["branch"] else [])]
+        is_ancestor = ("-C", job.clone, "merge-base", "--is-ancestor")
+        if any(git(*is_ancestor, sha, current, check=False).returncode for sha in ancestors):
+            raise ToolError("lost original commits or did not merge the base")
+    return result["status"] if code == 0 else f"exit code {code}", "preparation report", json.dumps(result)
+
+
+RUNS = {"issue": run_issue, "inspection": run_inspection, "preparation": run_preparation}
+
+
+def grade(case: dict, job: Job, start: dict, cache: Path, end: tuple[str, str, str]) -> tuple[str, str]:
+    """Why the run failed, or "" if it passed, and any log a check gave for the agent to fix."""
+    reached, label, text = end
+    if reached != case["expect"]:
+        asked = f": {text.splitlines()[0][:120]}" if label == "question" else ""
+        return f"ended in {reached}, not {case['expect']}{asked}", ""
+    if case.get("unchanged", job.inspection) and changed(job, start["branch"]):
+        return "changed files", ""
+    if checks := case.get("checks", []):
+        graded = job.log_path.parent / "graded"
+        shutil.rmtree(graded, ignore_errors=True)
+        git("clone", "--quiet", "--branch", EVAL_BRANCH, job.clone, graded)  # only what the agent committed
+        if links := [str(path.relative_to(graded)) for path in graded.rglob("*") if path.is_symlink()]:
+            return f"committed links, which a check could follow: {', '.join(links)}", ""
+    for check in checks:
+        result = fixture_command(check, case, job.log_path.parent, cache)
+        if result.returncode:
+            why, _, log = result.stdout.strip().partition("\n")
+            return why or f"{check} failed: {result.stderr.strip()[-1000:]}", log.strip()
+    if case.get("kind_line") and not pull_request_kind(text.partition("\n")[2]):
+        return "wrote no Kind line in pull-request.md", ""
+    if (criterion := case.get("criterion")) and not judge(text, criterion, job.log_path.parent, label):
+        return f"the {label} does not {criterion}", ""
+    return "", ""
+
+
+def eval_run(case: dict, run_dir: Path, cache: Path, args: argparse.Namespace, budget: float) -> dict:
+    """One run of one case, spending at most `budget`. The layout is a real run's: a clone, and a worktree on the eval
+    branch."""
+    fixture = EVALS_DIR / "fixtures" / case["fixture"]
     clone, worktree, handoff = run_dir / "clone", run_dir / "worktree", run_dir / "handoff"
-    shutil.copytree(fixture.repo, clone)
+    shutil.copytree(fixture / "repo", clone)
     handoff.mkdir()
     git("init", "--quiet", "--initial-branch", "main", clone)
-    git("-C", clone, "add", "--all")
-    git(
-        "-C",
-        clone,
-        "-c",
-        "user.name=workshop",
-        "-c",
-        "user.email=workshop@localhost",
-        "commit",
-        "--quiet",
-        "-m",
-        "Start",
-    )
+    commit(clone, "Start")
     git("-C", clone, "worktree", "add", "--quiet", "-b", EVAL_BRANCH, worktree)
-    shutil.copy(fixture.database, worktree / "fixture.duckdb")  # the agent's own copy of the raw data
-    prepare_agent_env(worktree)
+    (run_dir / "case.json").write_text(json.dumps(case))
+    setup = (fixture / "fixture.py").exists() and fixture_command("setup", case, run_dir, cache)
+    if setup and setup.returncode:
+        raise ToolError(f"could not set up the {case['fixture']} fixture: {setup.stderr.strip()}")
+    start = {"main": head(clone, "main"), "branch": head(clone)}
+    (run_dir / "start.json").write_text(json.dumps(start))
+    kind = case.get("kind", "issue")
+    choose = kind == "issue" and not case.get("skills_only", False)  # as `run` without --skills
+    if kind == "issue":
+        skills = offered_skills({}) if choose else find_skills(case["skills"], {})
+    else:  # as `inspect` and `prepare`: only their skill
+        skills = [SKILLS_DIR / name / "SKILL.md" for name in case["skills"]]
     settings = clone / ".claude" / "settings.json"
-    choose = not case.get(
-        "skills_only", False
-    )  # as `run` without --skills: the agent chooses from every job skill
     job = Job(
-        f"evals/{fixture.name}",
+        f"evals/{case['fixture']}",
         1,
-        offered_skills({}) if choose else find_skills(case["skills"], {}),
+        skills,
         EVAL_BRANCH,
-        "main",
+        start["main"],
         clone,
         json.loads(settings.read_text()) if settings.exists() else {},
         worktree,
@@ -380,27 +304,26 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         run_dir / "agent.log",
         args,
         github=False,
+        inspection=kind == "inspection" or case.get("phase") == "assessment",
+        budget=budget,
         choose=choose,
     )
-
-    def run(prompt: str) -> None:
-        spent = agent_usage(job.log_path)["cost_usd"]
-        job.agent_args = ["--tools", EVAL_TOOLS, "--max-budget-usd", f"{max(budget - spent, 0.01):.2f}"]
-        job.run_agent(prompt)
-
-    run(initial_prompt(job, issue_thread(case)))
-    attempts = 0
-    while True:
-        try:
-            passed, why, log = grade(job, case, fixture)
-        except ToolError as exc:  # such as a handoff file that is a link
-            passed, why, log = False, str(exc), ""
-        if not log or attempts >= args.max_fix_attempts or agent_usage(job.log_path)["cost_usd"] >= budget:
-            break
-        attempts += 1
-        run(fix_prompt(job, None, ["dbt build"], log))
-    shutil.rmtree(worktree / ".venv", ignore_errors=True)  # large, and not needed to review the run
-    return eval_result(job, case, *choice_result(job, case, passed, why), attempts)
+    if not job.inspection:
+        job.agent_args = ["--tools", EVAL_TOOLS]
+    attempts, end = 0, ("", "", "")
+    try:
+        end = RUNS[kind](case, job, start)
+        why, log = grade(case, job, start, cache, end)
+        # Only an issue job's checks give a log: send it back, as `run` sends back failed checks.
+        while log and attempts < args.max_fix_attempts and budget_left(job) > 0:
+            attempts += 1
+            job.run_agent(fix_prompt(job, None, [why], log))
+            end = issue_end(job, start)
+            why, log = grade(case, job, start, cache, end)
+    except ToolError as exc:  # such as a handoff file that is a link
+        why = str(exc)
+    shutil.rmtree(worktree / ".venv", ignore_errors=True)  # an environment from setup: large, and not needed
+    return eval_result(job, case, *choice_result(job, case, not why, why or end[0]), attempts)
 
 
 def choice_result(job: Job, case: dict, passed: bool, why: str) -> tuple[bool, str]:
@@ -413,7 +336,7 @@ def choice_result(job: Job, case: dict, passed: bool, why: str) -> tuple[bool, s
     return passed, why
 
 
-def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0) -> dict:
+def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int) -> dict:
     return {
         "finished": timestamp(),
         "case": case["name"],
@@ -427,62 +350,6 @@ def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0)
     }
 
 
-def prepare_agent_env(worktree: Path) -> None:
-    """The agent's own Python environment, in its worktree, from the packages prepare_fixture fetched."""
-    sh(["uv", "sync", "--frozen", "--offline", "--quiet"], cwd=worktree)
-
-
-def eval_inspection(case: dict, run_dir: Path, args: argparse.Namespace, budget: float) -> dict:
-    from workshop_inspect import (
-        ISSUES_FILE,
-        assess,
-        inspection_job,
-        issue_lines,
-        list_calls,
-        save_call_history,
-    )
-
-    worktree = run_dir / "worktree"
-    shutil.copytree(EVALS_DIR / "fixtures" / case["fixture"] / "repo", worktree)
-    job = inspection_job("evals/inspection", "fixture", worktree, worktree, run_dir, args)
-    job.agent_args = ["--max-budget-usd", f"{budget:.2f}"]
-    before = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
-    evidence = copy.deepcopy(case["observations"])
-    (run_dir / "logs").mkdir()
-    (run_dir / "history").mkdir()
-    for index, item in enumerate(evidence["functions"]):
-        calls = item["calls"]
-        save_call_history(item, calls, run_dir / "history" / f"{index:03}.jsonl")
-        fixtures = item.get("log_files", [{"scope": "function", "text": item.pop("logs", "")}])
-        for number, entry in enumerate(fixtures):
-            path = run_dir / "logs" / f"{index:03}-{number:03}.log"
-            logs = entry.pop("text")
-            logs += "routine progress: task completed\n" * case.get("log_noise_lines", 0)
-            path.write_text(logs, encoding="utf-8")
-            entry["path"] = str(path)
-        item["log_files"] = fixtures
-        list_calls(item, calls)
-    if "issues" in case:
-        (run_dir / ISSUES_FILE).write_text(json.dumps(case["issues"], indent=2), encoding="utf-8")
-    result = assess(job, evidence)
-    after = {path: path.read_bytes() for path in worktree.rglob("*") if path.is_file()}
-    passed = result["status"] == case["expect"] and before == after
-    why = result["status"] if before == after else "changed repository files"
-    if passed and "expect_issue" in case:
-        lines = issue_lines("evals/inspection", result, case["issues"], evidence, worktree)
-        wanted = "Create the issue:" if case["expect_issue"] == "new" else f"Matches #{case['expect_issue']} "
-        if not lines or not lines[0].startswith(wanted):
-            shown = [line for line in lines if line and not line.startswith("Create the issue:")] or lines[:1]
-            passed, why = False, f"issue: {' '.join(shown) or 'none'}"
-        elif any(value in json.dumps(result.get("issue")) for value in case.get("forbidden", [])):
-            passed, why = False, "issue text includes a forbidden value"
-    if passed:
-        passed = judge(json.dumps(result), case["criterion"], run_dir, label="assessment")
-        if not passed:
-            why = "decision matched, but the explanation or next step did not meet the criterion"
-    return eval_result(job, case, passed, why)
-
-
 def cmd_eval(args: argparse.Namespace) -> int:
     cases = load_cases(args.skill)
     if not cases:
@@ -494,39 +361,18 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 0
     home = Path.home() / ".workshop"
     runs_dir = home / "evals" / "runs" / timestamp("%Y%m%dT%H%M%SZ")
-    fixtures: dict[str, Fixture] = {}
     results: dict[str, list[dict]] = {case["name"]: [] for case in cases}
     spent, left = 0.0, len(cases) * args.runs
     for case in cases:
         for number in range(1, args.runs + 1):
-            share, left = (
-                (args.budget - spent) / left,
-                left - 1,
-            )  # what earlier runs left unspent carries over
+            # An equal share of what is left, so what earlier runs left unspent carries over.
+            share, left = (args.budget - spent) / left, left - 1
             if spent >= args.budget:
-                results[case["name"]].append(
-                    {
-                        "passed": False,
-                        "why": "skipped: the budget is spent",
-                        "cost_usd": 0.0,
-                        "seconds": {"agent": 0},
-                    }
-                )
+                results[case["name"]].append(SKIPPED)
                 continue
-            if case.get("kind") not in ("inspection", "preparation") and case["fixture"] not in fixtures:
-                fixtures[case["fixture"]] = prepare_fixture(case["fixture"], home / "evals" / case["fixture"])
             status(f"{case['name']}: run {number} of {args.runs}")
-            run_dir = runs_dir / f"{case['name']}-{number}"
-            if case.get("kind") == "preparation":
-                from workshop_prepare_eval import eval_preparation
-
-                result = eval_preparation(case, run_dir, args, share)
-            else:
-                result = (
-                    eval_inspection(case, run_dir, args, share)
-                    if case.get("kind") == "inspection"
-                    else eval_case(case, fixtures[case["fixture"]], run_dir, args, share)
-                )
+            run_dir, cache = runs_dir / f"{case['name']}-{number}", runs_dir / "fixtures" / case["fixture"]
+            result = eval_run(case, run_dir, cache, args, share)
             status(f"{case['name']}: {'passed' if result['passed'] else 'failed'}: {result['why']}")
             spent += result["cost_usd"]
             save_record(result, home / "logs" / "evals.jsonl")

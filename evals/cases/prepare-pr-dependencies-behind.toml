@@ -2,6 +2,7 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "dependency-update"
 expect = "ready"
+unchanged = true
 compatible = true
 behind = true
 criterion = "report that the dependency update is compatible and the repository tests passed without making repairs"

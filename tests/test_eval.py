@@ -7,13 +7,42 @@ import pytest
 import workshop
 import workshop_eval
 
+# Every key a case may have, so a misspelt or renamed one cannot be ignored: the shape, then what shapes the input,
+# then what each fixture's checks read.
+CASE_KEYS = {"name", "kind", "skills", "fixture", "expect", "unchanged", "checks", "criterion", "kind_line"}
+CASE_KEYS |= {
+    "skills_only",
+    "issue",
+    "observations",
+    "issues",
+    "expect_issue",
+    "forbidden",
+    "log_noise_lines",
+}
+CASE_KEYS |= {
+    "phase",
+    "evidence",
+    "log_tail",
+    "shared",
+    "request",
+    "feedback",
+    "compatible",
+    "conflict",
+    "behind",
+}
+CASE_KEYS |= {"add_columns", "remove_columns", "queries"}
+
 
 def test_eval_cases_are_valid():
     cases = workshop_eval.load_cases(None)
     assert cases
     for case in cases:
+        fixture = workshop_eval.EVALS_DIR / "fixtures" / case["fixture"]
+        assert case.keys() <= CASE_KEYS, (case["name"], case.keys() - CASE_KEYS)
         assert workshop.find_skills(case["skills"], {})  # the tool's own skills
-        assert (workshop_eval.EVALS_DIR / "fixtures" / case["fixture"] / "repo").is_dir()
+        assert (fixture / "repo").is_dir() and isinstance(case.get("criterion", ""), str)
+        if "checks" in case:  # each fixture.py provides one check
+            assert case["checks"] == ["check"] and (fixture / "fixture.py").is_file()
         if case.get("kind") == "inspection":
             assert case["expect"] in ("ok-after-review", "action-required", "unable-to-assess")
             assert case["observations"]["functions"] and case["criterion"]
@@ -22,63 +51,41 @@ def test_eval_cases_are_valid():
             assert case["skills"] == ["prepare-pr"] and case["criterion"]
             if case.get("phase") == "assessment":
                 assert case["evidence"]
+            elif case["expect"] == "ready":  # a ready PR is either left as it was or checked
+                assert case.get("unchanged") or case.get("checks")
         else:
             assert case["expect"] in ("pull-request", "question")
             assert case["issue"]["title"] and case["issue"]["body"]
             [skill] = case["skills"]  # the skill the agent must read
             assert skill in workshop.job_skills()
             assert isinstance(case.get("skills_only", False), bool)
+            assert ("checks" in case) is (case["expect"] == "pull-request")
 
 
 def agent_that(tmp_path, monkeypatch, *, extra=None):
-    """Run evals with a fake agent, build and judge. Returns each agent run's (prompt, command-line arguments)."""
+    """Run evals with a fake agent, fixture and judge. Returns each agent run's prompt and the end of its command
+    line. The fixture's check fails plan-tier's first build."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    database = tmp_path / "raw.duckdb"
-    database.write_text("")
-    monkeypatch.setattr(
-        workshop_eval,
-        "prepare_fixture",
-        lambda name, work: workshop_eval.Fixture(
-            name,
-            workshop_eval.EVALS_DIR / "fixtures" / name / "repo",
-            tmp_path / "venv",
-            database,
-            {"tables": {}, "tests": []},
-        ),
-    )
-    monkeypatch.setattr(workshop_eval, "prepare_agent_env", lambda worktree: None)
-    builds = iter([(False, "Compilation Error in model dim_customers")])
-    monkeypatch.setattr(
-        workshop_eval,
-        "dbt_build",
-        lambda fixture, project: (
-            next(builds, (True, ""))
-            if project.parent.name.startswith("add-fields-plan-tier-")
-            else (True, "")
-        ),
-    )
-    expected = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
-    monkeypatch.setattr(workshop_eval, "query", lambda fixture, project, sql: expected["queries"][0]["rows"])
-    monkeypatch.setattr(workshop_eval, "snapshot", lambda fixture, project: fixture.baseline)
-    monkeypatch.setattr(workshop_eval, "judge", lambda question, criterion, cwd: "contact_email" in question)
+    builds = iter(["dbt build failed\nCompilation Error in model dim_customers\n"])
+
+    def fixture(command, case, run_dir, cache):
+        failed = next(builds, "") if command == "check" and case["name"] == "add-fields-plan-tier" else ""
+        return subprocess.CompletedProcess([], 1 if failed else 0, failed, "")
+
+    monkeypatch.setattr(workshop_eval, "fixture_command", fixture)
+    monkeypatch.setattr(workshop_eval, "judge", lambda text, criterion, cwd, label: "contact_email" in text)
     runs = []
 
     def agent(job, prompt):
-        runs.append((prompt, job.agent_args))
-        reads = [
-            {
-                "type": "assistant",
-                "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": path}}]},
-            }
-            for path in re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+        runs.append((prompt, workshop.claude_command(job)[-4:]))
+        paths = re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+        reads = [{"type": "tool_use", "name": "Read", "input": {"file_path": path}} for path in paths]
+        events = [
+            {"type": "assistant", "message": {"content": reads}},
+            {"type": "result", "total_cost_usd": 0.1},
         ]
         with job.log_path.open("a") as log:
-            log.write(
-                "=== output:\n"
-                + "".join(json.dumps(event) + "\n" for event in reads)
-                + json.dumps({"type": "result", "total_cost_usd": 0.1})
-                + "\n"
-            )
+            log.write("=== output:\n" + "".join(json.dumps(event) + "\n" for event in events))
         if "phone" in prompt:
             (job.handoff / "question.md").write_text("Which table has phone numbers?\n")
         elif "email" in prompt:
@@ -89,23 +96,7 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
             if extra and "failing checks" not in prompt:
                 extra(job.worktree)
             (job.handoff / "pull-request.md").write_text("Add plan_tier\n\nCloses #1\n")
-            subprocess.run(["git", "-C", job.worktree, "add", "--all"], check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    job.worktree,
-                    "-c",
-                    "user.name=agent",
-                    "-c",
-                    "user.email=agent@localhost",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "Change",
-                ],
-                check=True,
-            )
+            workshop_eval.commit(job.worktree, "Change")
         return 0
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)
@@ -131,26 +122,17 @@ def test_eval_grades_each_case(tmp_path, monkeypatch, capsys):
     [phone] = [prompt for prompt, _ in runs if "# Add phone number to dim_customers" in prompt]
     assert "This job has no github tools" in phone
     share = f"{5 / len(workshop_eval.load_cases('add-fields')):.2f}"  # an equal share of the $5 default
-    assert runs[0][1] == ["--tools", "Bash,Read,Edit,Write", "--max-budget-usd", share]
+    assert runs[0][1] == ["--max-budget-usd", share, "--tools", "Bash,Read,Edit,Write"]
     assert "| add-fields-plan-tier | 1 of 1 |" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "extra, why",
-    [
-        (
-            lambda worktree: (worktree / "dbt_project.yml").write_text("name: other\n"),
-            "outside models/: dbt_project.yml",
-        ),
-        (lambda worktree: (worktree / "models" / "secret.sql").symlink_to("/etc/hosts"), "committed links"),
-    ],
-    ids=["outside models", "link"],
-)
-def test_eval_refuses_to_build(tmp_path, monkeypatch, extra, why):
-    agent_that(tmp_path, monkeypatch, extra=extra)
-    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
+def test_eval_refuses_committed_links_before_any_check(tmp_path, monkeypatch):
+    agent_that(
+        tmp_path, monkeypatch, extra=lambda worktree: (worktree / "models" / "a.sql").symlink_to("/etc/hosts")
+    )
+    assert workshop.main(["eval", "--case", "add-fields-plan-tier"]) == 0
     result = eval_results(tmp_path)["add-fields-plan-tier"]
-    assert not result["passed"] and why in result["why"] and result["fix_attempts"] == 0
+    assert not result["passed"] and "committed links" in result["why"] and result["fix_attempts"] == 0
 
 
 def test_eval_budget(tmp_path, monkeypatch, capsys):
@@ -160,58 +142,31 @@ def test_eval_budget(tmp_path, monkeypatch, capsys):
     assert "skipped: the budget is spent" in capsys.readouterr().out
 
 
-def test_eval_rejects_tiers_assigned_to_the_wrong_customers(tmp_path, monkeypatch):
-    agent_that(tmp_path, monkeypatch)
-    case = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
-    wrong = [row[:] for row in case["queries"][0]["rows"]]
-    wrong[0][1], wrong[1][1] = wrong[1][1], wrong[0][1]  # the old distribution check would pass
-    monkeypatch.setattr(workshop_eval, "query", lambda *args: wrong)
-    assert workshop.main(["eval", "--skill", "add-fields"]) == 0
-    result = eval_results(tmp_path)["add-fields-plan-tier"]
-    assert not result["passed"] and "returned" in result["why"]
-
-
 @pytest.mark.parametrize("change", [None, "committed", "staged", "unstaged", "untracked"])
 def test_question_case_requires_unchanged_files(tmp_path, monkeypatch, change):
     agent_that(tmp_path, monkeypatch)
-    case = next(
+    [case] = [
         case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-multiple-ambiguous"
-    )
+    ]
     monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
     ask = workshop.invoke_agent
 
     def agent(job, prompt):
         result = ask(job, prompt)
         if change:
-            model = (
-                job.worktree
-                / "models"
-                / "marts"
-                / ("partial.sql" if change == "untracked" else "dim_customers.sql")
-            )
-            model.write_text("select 1 as partial_change\n")
-            if change in ("committed", "staged"):
+            name = "partial.sql" if change == "untracked" else "dim_customers.sql"
+            (job.worktree / "models" / "marts" / name).write_text("select 1 as partial_change\n")
+            if change == "staged":
                 workshop.git("-C", job.worktree, "add", "--all")
             if change == "committed":
-                workshop.git(
-                    "-C",
-                    job.worktree,
-                    "-c",
-                    "user.name=agent",
-                    "-c",
-                    "user.email=agent@localhost",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    "Partial change before asking",
-                )
+                workshop_eval.commit(job.worktree, "Partial change before asking")
         return result
 
     monkeypatch.setattr(workshop, "invoke_agent", agent)
     assert workshop.main(["eval", "--skill", "add-fields"]) == 0
     result = eval_results(tmp_path)[case["name"]]
     assert result["passed"] is (change is None)
-    assert result["why"] == ("asked" if change is None else "changed files before asking")
+    assert result["why"] == ("question" if change is None else "changed files")
 
 
 @pytest.mark.parametrize(
@@ -226,7 +181,7 @@ def test_eval_runs_named_cases(tmp_path, monkeypatch, options):
     runs = agent_that(tmp_path, monkeypatch)
     assert workshop.main(["eval", *options, "--budget", "1"]) == 0
     assert eval_results(tmp_path).keys() == {"add-fields-plan-tier", "add-fields-two-emails"}
-    assert runs[0][1][-1] == "0.50"  # the budget is split between the cases that run
+    assert runs[0][1][1] == "0.50"  # the budget is split between the cases that run
 
 
 @pytest.mark.parametrize(
@@ -319,11 +274,11 @@ def test_changed_files_since_the_default_branch(tmp_path, monkeypatch):
 def test_pull_request_case_checks_kind_and_criterion(tmp_path, monkeypatch, text, why):
     agent_that(tmp_path, monkeypatch)
     case = next(case for case in workshop_eval.load_cases(None) if case["name"] == "add-fields-plan-tier")
-    case = case | {"kind_line": True, "pull_request": "name a check"}
+    case = case | {"kind_line": True, "criterion": "name a check"}
     monkeypatch.setattr(workshop_eval, "load_cases", lambda skill: [case])
     judged = []
 
-    def judge(text, criterion, cwd, label="question"):
+    def judge(text, criterion, cwd, label):
         judged.append((criterion, label))
         return "Checked:" in text
 
@@ -339,7 +294,7 @@ def test_pull_request_case_checks_kind_and_criterion(tmp_path, monkeypatch, text
     assert workshop.main(["eval", "--skill", "add-fields"]) == 0
     result = eval_results(tmp_path)[case["name"]]
     assert result["passed"] is (why is None)
-    assert result["why"] == (why or "changed it, and every check passes")
+    assert result["why"] == (why or "pull-request")
     assert judged == ([] if why and "Kind" in why else [("name a check", "pull request")])
 
 

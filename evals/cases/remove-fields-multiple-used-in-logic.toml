@@ -3,7 +3,7 @@ skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true
-question = "point out that removing `amount` affects the calculation of `lifetime_value` in `dim_customers` and ask how to handle that dependency"
+criterion = "point out that removing `amount` affects the calculation of `lifetime_value` in `dim_customers` and ask how to handle that dependency"
 
 [issue]
 title = "Remove order timestamp and amount"

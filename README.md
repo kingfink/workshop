@@ -111,7 +111,7 @@ Results update the tool's own comment on each PR. Reruns reassess the current co
 
 ### score
 
-`score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the questions, fix attempts, denied tool calls and cost. A job whose pull request names its kind of work gets a row per kind, such as `other: rename field`, so you can see which kinds recur and how they end. It also counts each job's latest recorded CI validation: passed, failed, unverified or unknown for older records. These describe the recorded commit when checked, not the PR's current checks. `--since 2026-10-01` counts only runs from that date on.
+`score` reads the run records in the tool's own comments on a target repo's issues, and shows for each skill how its jobs ended: merged as-is (at the commit the tool last pushed), merged after changes, closed unmerged, open or escalated, with the runs, questions, fix attempts and cost, in all and per merged PR. A job whose pull request names its kind of work gets a row per kind, such as `other: rename field`, so you can see which kinds recur and how they end. `--since 2026-10-01` counts only runs from that date on.
 
 ### inspect
 
@@ -142,15 +142,19 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 ### eval
 
-`eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. Such a case can also require a `Kind:` line in the pull request, and a small model's judgment that the pull request does what the case says. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
+`eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. It publishes nothing, and prints a table of results.
 
-Each issue case gives the agent every job skill, as `run` does without `--skills`, and fails unless the agent read the case's skill; then it is graded as above. A case with `skills_only = true` gives only its own skills, to test a scope rule the agent would not reach from the full list.
+A case is an issue, an inspection or a preparation. Each names its skills, a fixture and its input, such as an issue, logs or a pull request, and the end it expects: a question, a pull request or an assessment's status. It passes if the agent reaches that end and the rest of the case holds:
+
+- `unchanged`: the agent changed no files. Inspection cases always require it.
+- `checks`: commands the fixture provides, each run against a fresh clone of only what the agent committed, and each of which must pass. A clone with a committed symbolic link fails before any check runs. If a check of an issue case fails with a log, such as a failed build's, the agent gets the log and a fix attempt.
+- `criterion`: a small model judges that the question, pull request or report meets it.
+
+A fixture is a `repo/`, the target repo, and an optional `fixture.py`, which sets up each run and provides its checks. The checks run outside the agent's sandbox, so they run no code the agent wrote, except that the dbt fixture builds the agent's SQL and YAML in DuckDB with no file or network access. Its check passes if only SQL and YAML under `models/` changed, the project builds, the complete outputs and tests are preserved outside the case's permitted column changes, and the case's queries return its rows. The other fixtures' checks read the committed files without running them.
+
+Each issue case gives the agent every job skill, as `run` does without `--skills`, and fails unless the agent read the case's skill. A case with `skills_only = true` gives only its own skills, to test a scope rule the agent would not reach from the full list. Inspection and preparation cases make no calls to external services for evidence.
 
 Evals are not part of CI, because each run costs real money. Run them when you change a skill or the prompt.
-
-Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
-
-`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing and need no external dependency registry.
 
 | Option | Default | |
 |---|---|---|
@@ -159,7 +163,7 @@ Inspection cases provide made-up job histories, logs and repository context. The
 | `--changed` | off | Only cases whose inputs differ from the branch point with `origin/HEAD`, including uncommitted and new files. Inputs are the case, fixture and skills; issue cases also use `workshop`. A change to any `workshop*.py` module selects every case. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
-| `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
+| `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing check. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 
 `--skill`, `--case` and `--changed` combine: a case runs if it meets each one given.
@@ -196,9 +200,7 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 
 The agent's log streams to `~/.workshop/logs/` and stays there: it can hold anything a command printed.
 
-Each issue run also records its outcome, the skills it used with a hash of each, the pull request and the commit the tool last pushed, its time in the agent and waiting for checks, and the agent's model, turns, tokens, cost and tool calls, including the ones it was denied. The record goes in `~/.workshop/logs/runs.jsonl` and, hidden, in the run's comment on the issue, which shows the agent time and cost.
-
-Validation is separate from the outcome: an open PR can be unverified. The `validation` record names its source (`github-checks`), status, reason, commit, observation time and reported checks with their states and links. `passed` means the reported checks finished without a failure and at least one succeeded; it does not establish that every intended check ran. Failed or cancelled checks give `failed`. No checks, only skipped or neutral checks, an unfinished wait without a known failure, or no observation give `unverified`. If the PR moves to another commit while waiting, the tool escalates instead of attributing its checks to the pushed commit. Local tests described by the agent are not tool-observed validation.
+Each issue run also records its outcome, the skills it used with a hash of each, the pull request and the commit the tool last pushed, its time in the agent and waiting for checks, and the agent's model, turns, tokens, cost and tool calls. The record goes in `~/.workshop/logs/runs.jsonl` and, hidden, in the run's comment on the issue. The comment shows the agent time and cost and, for a pull request, the GitHub checks' status at the commit the tool pushed: `passed` if they finished with a success and no failure, otherwise `failed` or `unverified`.
 
 Costs are API-equivalent: what the tokens would cost at API prices, whether or not Claude Code is logged in with a subscription.
 

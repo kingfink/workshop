@@ -2,8 +2,9 @@
 skills = ["other"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
+checks = ["check"]
 kind_line = true
-pull_request = "say that a check failed before the change and passes after it"
+criterion = "say that a check failed before the change and passes after it"
 
 [remove_columns]
 fct_orders = ["amount"]

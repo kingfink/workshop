@@ -6,9 +6,8 @@ from pathlib import Path
 import pytest
 
 import workshop as w
+import workshop_eval
 import workshop_prepare as p
-import workshop_prepare_eval as pe
-from workshop_eval import load_cases
 
 REPO = "acme/analytics"
 
@@ -440,7 +439,7 @@ def test_conflict_only_repair_publishes_the_merge_commit(git_job, monkeypatch):
         )
         assert conflict.returncode and "CONFLICT" in conflict.stdout
         (self.worktree / "dependency.txt").write_text("2\n")
-        pe.commit(self.worktree, "Resolve dependency conflict")
+        workshop_eval.commit(self.worktree, "Resolve dependency conflict")
         (self.handoff / "preparation.json").write_text(
             '{"status":"ready","summary":"Resolved the conflict."}'
         )
@@ -674,21 +673,32 @@ def test_prepare_skill_is_not_an_issue_skill(fake):
     assert not fake.calls("gh")
 
 
+FIXES = {  # each fixture's repaired app.py
+    "prepare-pr-feature-repair": "def total(values, fee=0):\n    return sum(values) + fee\n",
+    "prepare-pr-dependencies-compatibility": (
+        'from widget import render\n\n\ndef message():\n    return render("hello", upper=True)\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("name", FIXES)
 @pytest.mark.parametrize("change", ["repair", "none", "weaken-tests", "uncommitted"])
-def test_feature_eval_checks_committed_behavior_and_preserves_tests(tmp_path, monkeypatch, change):
-    case = next(case for case in load_cases("prepare-pr") if case["name"] == "prepare-pr-feature-repair")
-    monkeypatch.setattr(pe, "judge", lambda *a: True)
+def test_preparation_eval_checks_committed_behavior_and_preserves_tests(tmp_path, monkeypatch, name, change):
+    """Each fixture's own setup and check run: the PR is committed for the agent, and only its commits are graded."""
+    [case] = [case for case in workshop_eval.load_cases("prepare-pr") if case["name"] == name]
+    monkeypatch.setattr(workshop_eval, "judge", lambda *a: True)
 
     def agent(task, prompt):
+        assert "Prepare the existing PR #1" in prompt and "diff --git" in prompt  # the PR the setup committed
         if change != "none":
-            (task.worktree / "app.py").write_text("def total(values, fee=0):\n    return sum(values) + fee\n")
+            (task.worktree / "app.py").write_text(FIXES[name])
         if change == "weaken-tests":
             (task.worktree / "tests" / "test_fee.py").write_text("")
         if change in ("repair", "weaken-tests"):
-            pe.commit(task.worktree, "Repair")
+            workshop_eval.commit(task.worktree, "Repair")
         (task.handoff / "preparation.json").write_text('{"status":"ready","summary":"Verified"}')
         return 0
 
     monkeypatch.setattr(w, "invoke_agent", agent)
-    result = pe.eval_preparation(case, tmp_path, args(), 1)
-    assert result["passed"] == (change == "repair")
+    result = workshop_eval.eval_run(case, tmp_path / "run", tmp_path / "cache", args(), 1)
+    assert result["passed"] == (change == "repair"), result["why"]

@@ -3,7 +3,7 @@ skills = ["other"]
 fixture = "dbt-duckdb"
 expect = "question"
 unchanged = true
-question = "ask what value the requester expected"
+criterion = "ask what value the requester expected"
 
 [issue]
 title = "Lifetime value looks off"

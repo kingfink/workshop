@@ -2,6 +2,7 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "dependency-update"
 expect = "ready"
+checks = ["check"]
 compatible = true
 conflict = true
 criterion = "describe preserving both the PR's widget update and the base's helper update, regenerating the lockfile using the documented resolver, and running the tests successfully"
