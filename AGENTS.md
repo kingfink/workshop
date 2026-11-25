@@ -31,8 +31,6 @@ A skill must stand on its own: the agent working a job can read the skills, but 
 
 ## Evals
 
-When you change a skill or the agent's prompt, run that skill's evals with `./workshop.py eval --skill <name>` and paste the table into the pull request.
-
-When you change a skill's description or the prompt that chooses a job's skill, also run `./workshop.py eval --route --runs 3`, compare it with the default branch's, and paste that table too.
+When you change a skill or the agent's prompt, name in the pull request the eval command that covers it, such as `./workshop.py eval --skill add-fields`. Run it only if the owner asks.
 
 Write each case in `evals/cases/` from a rule in the skill, not from its wording, so a reworded skill still has to pass. When a real job goes wrong, add a case that would have caught it. The test projects in `evals/fixtures/` hold made-up data only.

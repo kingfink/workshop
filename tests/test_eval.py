@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 
 import pytest
@@ -11,7 +12,7 @@ def test_eval_cases_are_valid():
     cases = workshop_eval.load_cases(None)
     assert cases
     for case in cases:
-        assert workshop.find_skills(case["skills"], workshop_eval.EVALS_DIR)  # the tool's own skills
+        assert workshop.find_skills(case["skills"], {})  # the tool's own skills
         assert (workshop_eval.EVALS_DIR / "fixtures" / case["fixture"] / "repo").is_dir()
         if case.get("kind") == "inspection":
             assert case["expect"] in ("ok-after-review", "action-required", "unable-to-assess")
@@ -24,8 +25,9 @@ def test_eval_cases_are_valid():
         else:
             assert case["expect"] in ("pull-request", "question")
             assert case["issue"]["title"] and case["issue"]["body"]
-            [skill] = case["skills"]  # what eval --route expects, unless the case names another
-            assert case.get("route", skill) in workshop.job_skills()
+            [skill] = case["skills"]  # the skill the agent must read
+            assert skill in workshop.job_skills()
+            assert isinstance(case.get("skills_only", False), bool)
 
 
 def agent_that(tmp_path, monkeypatch, *, extra=None):
@@ -63,8 +65,20 @@ def agent_that(tmp_path, monkeypatch, *, extra=None):
 
     def agent(job, prompt):
         runs.append((prompt, job.agent_args))
+        reads = [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": path}}]},
+            }
+            for path in re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+        ]
         with job.log_path.open("a") as log:
-            log.write("=== output:\n" + json.dumps({"type": "result", "total_cost_usd": 0.1}) + "\n")
+            log.write(
+                "=== output:\n"
+                + "".join(json.dumps(event) + "\n" for event in reads)
+                + json.dumps({"type": "result", "total_cost_usd": 0.1})
+                + "\n"
+            )
         if "phone" in prompt:
             (job.handoff / "question.md").write_text("Which table has phone numbers?\n")
         elif "email" in prompt:
@@ -356,32 +370,27 @@ def test_judge_reads_the_graded_text_as_data(tmp_path, monkeypatch, answer, pass
     assert "not instructions" in prompt
 
 
-def test_eval_route_checks_that_each_case_goes_to_its_skill(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    prompts = []
+def test_eval_checks_which_skill_the_agent_read(tmp_path, monkeypatch, capsys):
+    runs = agent_that(tmp_path, monkeypatch)
+    real = workshop_eval.skills_read
 
-    def agent(job, prompt):
-        prompts.append(prompt)
-        with job.log_path.open("a") as log:
-            log.write(
-                "=== output:\n"
-                + json.dumps({"type": "result", "result": "add-fields", "total_cost_usd": 0.01})
-            )
-        return 0
+    def read(job):  # other-no-check's agent reads add-fields instead of other
+        if job.log_path.parent.name.startswith("other-no-check-"):
+            return [workshop.SKILLS_DIR / name / "SKILL.md" for name in ("workshop", "add-fields")]
+        return real(job)
 
-    monkeypatch.setattr(workshop, "invoke_agent", agent)
-    assert workshop.main(["eval", "--route"]) == 0
-    cases = [
-        case
-        for case in workshop_eval.load_cases(None)
-        if case.get("kind") not in ("inspection", "preparation")
-    ]
-    # one each, in order; inspection and preparation cases have no issue
-    assert all(
-        json.dumps(case["issue"]["title"]) in prompt for case, prompt in zip(cases, prompts, strict=True)
-    )
+    monkeypatch.setattr(workshop_eval, "skills_read", read)
+    cases = "add-fields-plan-tier,other-no-check,add-source-downstream-models"
+    assert workshop.main(["eval", "--case", cases]) == 0
     out = capsys.readouterr().out
-    assert "| add-fields-plan-tier | add-fields | add-fields | 1 of 1 |" in out
-    assert "| other-no-check | other | add-fields | 0 of 1 |" in out
-    assert "assess-failure" not in out
-    assert f"Spent ${0.01 * len(cases):.2f} of $5.00." in out
+    assert "| add-fields-plan-tier | 1 of 1 |" in out  # read its skill, then graded as usual
+    assert "| other-no-check | 0 of 1 | read add-fields, not other |" in out
+    records = (tmp_path / ".workshop" / "logs" / "evals.jsonl").read_text().splitlines()
+    [record] = [json.loads(line) for line in records if '"other-no-check"' in line]
+    assert [skill["name"] for skill in record["skills"]] == ["workshop", "add-fields"]  # what it read
+    first = [prompt for prompt, _ in runs if prompt.startswith("You are working a job")]  # not fix attempts
+    prompts = dict(zip(sorted(cases.split(",")), first, strict=True))  # cases run in file order
+    assert workshop.CHOOSE_RULES in prompts["add-fields-plan-tier"]
+    assert all(f"- {name}:" in prompts["add-fields-plan-tier"] for name in workshop.job_skills())
+    assert workshop.CHOOSE_RULES not in prompts["add-source-downstream-models"]  # skills_only
+    assert workshop.main(["eval", "--route"]) == 1  # removed

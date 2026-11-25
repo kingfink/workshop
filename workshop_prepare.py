@@ -409,9 +409,7 @@ def run_batch(repo: str, prs: list[dict], args: argparse.Namespace, home: Path, 
     worktree = home / "worktrees" / f"{repo.replace('/', '-')}-prepare-assessment"
     base = w.prepare_worktree(repo, "workshop/prepare-assessment", clone, worktree)
     # Trusted settings and skill overrides are read only from the default branch.
-    skill_dir = run_dir / "skills"
-    w.copy_repo_skills(repo, base, [SKILL], skill_dir)
-    skill = w.find_skills([SKILL], skill_dir)[1]
+    skill = w.find_skills([SKILL], w.copy_repo_skills(repo, base, run_dir / "skills"))[1]
     handoff = run_dir / "handoff"
     handoff.mkdir()
     job = w.Job(

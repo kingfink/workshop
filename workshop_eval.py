@@ -15,7 +15,6 @@ from pathlib import Path
 
 from workshop import (
     FAILED_LOG_CHARS,
-    REPO_SKILLS,
     SMALL_MODEL,
     TOOL_ROOT,
     Job,
@@ -28,14 +27,14 @@ from workshop import (
     handoff_text,
     initial_prompt,
     invoke_agent,
-    job_skills,
     last_result,
     markdown_table,
+    offered_skills,
     pull_request_kind,
-    route,
     save_record,
     sh,
     skill_records,
+    skills_read,
     status,
     timestamp,
 )
@@ -277,42 +276,6 @@ def small_model_job(run_dir: Path, name: str) -> Job:
     )
 
 
-def route_cases(cases: list[dict], runs_dir: Path, args: argparse.Namespace) -> int:
-    """Choose each case's skill from its issue, as a run without --skills does, and check it is the case's `route`,
-    or else its skill."""
-    skills, rows, spent = job_skills(), [], 0.0
-    for case in cases:
-        if case.get("kind") in ("inspection", "preparation"):
-            continue
-        expected, chosen = case.get("route", case["skills"][0]), []
-        for number in range(1, args.runs + 1):
-            if spent >= args.budget:
-                chosen.append("skipped: the budget is spent")
-                continue
-            run_dir = runs_dir / f"{case['name']}-route-{number}"
-            run_dir.mkdir(parents=True)
-            job = small_model_job(run_dir, "route")
-            issue = case["issue"]
-            thread = {"title": issue["title"], "body": issue["body"], "comments": issue.get("comments", [])}
-            chosen.append(route(job, thread, skills))
-            spent += agent_usage(job.log_path)["cost_usd"]
-            status(f"{case['name']}: run {number} of {args.runs} chose {chosen[-1]}")
-        rows.append(
-            [
-                case["name"],
-                expected,
-                "; ".join(dict.fromkeys(chosen)),
-                f"{chosen.count(expected)} of {len(chosen)}",
-            ]
-        )
-    if not rows:
-        print("No selected case has an issue to choose a skill for.")
-        return 0
-    print(markdown_table(["Case", "Skill", "Chosen", "Passed"], rows))
-    print(f"\nSpent ${spent:.2f} of ${args.budget:.2f}. Each run's files are in {runs_dir}.")
-    return 0
-
-
 def issue_thread(case: dict) -> str:
     issue = case["issue"]
     thread = [f"# {issue['title']}", "", issue["body"].strip()]
@@ -401,10 +364,13 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
     shutil.copy(fixture.database, worktree / "fixture.duckdb")  # the agent's own copy of the raw data
     prepare_agent_env(worktree)
     settings = clone / ".claude" / "settings.json"
+    choose = not case.get(
+        "skills_only", False
+    )  # as `run` without --skills: the agent chooses from every job skill
     job = Job(
         f"evals/{fixture.name}",
         1,
-        find_skills(case["skills"], clone / REPO_SKILLS),
+        offered_skills({}) if choose else find_skills(case["skills"], {}),
         EVAL_BRANCH,
         "main",
         clone,
@@ -414,6 +380,7 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         run_dir / "agent.log",
         args,
         github=False,
+        choose=choose,
     )
 
     def run(prompt: str) -> None:
@@ -433,7 +400,17 @@ def eval_case(case: dict, fixture: Fixture, run_dir: Path, args: argparse.Namesp
         attempts += 1
         run(fix_prompt(job, None, ["dbt build"], log))
     shutil.rmtree(worktree / ".venv", ignore_errors=True)  # large, and not needed to review the run
-    return eval_result(job, case, passed, why, attempts)
+    return eval_result(job, case, *choice_result(job, case, passed, why), attempts)
+
+
+def choice_result(job: Job, case: dict, passed: bool, why: str) -> tuple[bool, str]:
+    """The case fails if the agent chose its skills and did not read the case's own."""
+    if not job.choose:
+        return passed, why
+    read = [path.parent.name for path in skills_read(job) if path.parent.name != "workshop"]
+    if case["skills"][0] not in read:
+        return False, f"read {', '.join(read) or 'no job skill'}, not {case['skills'][0]}"
+    return passed, why
 
 
 def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0) -> dict:
@@ -443,7 +420,7 @@ def eval_result(job: Job, case: dict, passed: bool, why: str, attempts: int = 0)
         "passed": passed,
         "why": why,
         "fix_attempts": attempts,
-        "skills": skill_records(job.skills),
+        "skills": skill_records(skills_read(job) if job.choose else job.skills),
         "run_dir": str(job.log_path.parent),
         "seconds": {"agent": round(job.agent_s)},
         **agent_usage(job.log_path),
@@ -517,8 +494,6 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 0
     home = Path.home() / ".workshop"
     runs_dir = home / "evals" / "runs" / timestamp("%Y%m%dT%H%M%SZ")
-    if args.route:
-        return route_cases(cases, runs_dir, args)
     fixtures: dict[str, Fixture] = {}
     results: dict[str, list[dict]] = {case["name"]: [] for case in cases}
     spent, left = 0.0, len(cases) * args.runs

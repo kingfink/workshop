@@ -3,11 +3,13 @@
 Usage: fake.py gh|git|agent ARGS...
 """
 
+import base64
 import json
 import os
 import re
 import sys
 import time
+import urllib.parse
 
 STATE = os.environ["FAKE_STATE"]
 BRANCH = "workshop/issue-12"  # the tests always work acme/analytics#12
@@ -21,6 +23,18 @@ def load():
 def save(state):
     with open(STATE, "w") as f:
         json.dump(state, f)
+
+
+def branch_files(state):
+    """The default branch's files, each path with its content and git mode, as GitHub lists them."""
+    executable = state.get("default_branch_executables", [])
+    return {
+        **{
+            path: (text, "100755" if path in executable else "100644")
+            for path, text in state.get("default_branch_files", {}).items()
+        },
+        **{path: (target, "120000") for path, target in state.get("default_branch_links", {}).items()},
+    }
 
 
 def flag(args, name):
@@ -53,16 +67,50 @@ def gh(state, args):
                 }
             )
         )
+    elif args[0] == "api" and (
+        found := re.fullmatch(r"repos/acme/analytics/git/(trees|blobs)/(\w+)(\?recursive=1)?", args[-1])
+    ):
+        kind, path = (
+            found[1],
+            bytes.fromhex(found[2]).decode(),
+        )  # the fake's sha of a folder or file is its path
+        files = branch_files(state)
+        if kind == "blobs":
+            print(
+                json.dumps(
+                    {"content": base64.b64encode(files[path][0].encode()).decode(), "encoding": "base64"}
+                )
+            )
+            return 0
+        entries = [
+            {"path": name.removeprefix(f"{path}/"), "mode": mode, "type": "blob", "sha": name.encode().hex()}
+            for name, (_, mode) in files.items()
+            if name.startswith(f"{path}/")
+        ]
+        print(json.dumps({"tree": entries, "truncated": state.get("tree_truncated", False)}))
     elif (
         args[0] == "api"
-    ):  # api -H <accept> repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it
-        path, commit = re.fullmatch(r"repos/acme/analytics/contents/(.+)\?ref=(.+)", args[-1]).groups()
-        content = (
-            state.get("default_branch_files", {}).get(path) if commit == state["default_commit"] else None
-        )
-        if content is None:
+    ):  # api [-H <accept>] repos/<repo>/contents/<path>?ref=<commit>: a file as GitHub has it, or a folder's listing
+        path, commit = re.fullmatch(r"repos/acme/analytics/contents/(.*)\?ref=(.+)", args[-1]).groups()
+        path = urllib.parse.unquote(path)
+        if commit != state["default_commit"]:
             return "gh: Not Found (HTTP 404)"
-        sys.stdout.write(content)
+        files = branch_files(state)
+        if path in state.get("default_branch_files", {}):
+            sys.stdout.write(files[path][0])
+            return 0
+        children = {
+            name.removeprefix(f"{path}/").split("/")[0]: name.removeprefix(f"{path}/").count("/") > 0
+            for name in files
+            if name.startswith(f"{path}/")
+        }
+        if not children:
+            return "gh: Not Found (HTTP 404)"
+        listing = [
+            {"name": child, "type": "dir" if folder else "file", "sha": f"{path}/{child}".encode().hex()}
+            for child, folder in children.items()
+        ]
+        print(json.dumps(listing))
     elif command == ["repo", "clone"]:
         os.makedirs(os.path.join(args[3], ".git"))
     elif command == ["label", "create"]:
@@ -174,22 +222,12 @@ def git(state, args):
 
 
 def agent(state):
-    """Record the prompt, then commit or leave handoff files as state["agent_mode"] says.
+    """Record the prompt, read the skills it lists, then commit or leave handoff files as state["agent_mode"] says.
 
-    Asked to choose a skill, answer with state["route"] instead.
+    It reads each listed SKILL.md whose folder is in state["read"], or all of them if that is not set, and then each
+    path in state["extra_reads"].
     """
     prompt = sys.stdin.read()
-    if "Answer with the name of one skill" in prompt:
-        state.setdefault("route_runs", []).append(prompt)
-        result = {
-            "type": "result",
-            "num_turns": 1,
-            "total_cost_usd": 0.01,
-            "result": state.get("route", "add-fields"),
-        }
-        print(json.dumps(result), flush=True)
-        save(state)
-        return state.get("route_exit", 0)
     with open(os.environ["CLAUDE_ENV_FILE"]) as f:
         env_file = f.read()
     state["agent_runs"].append(
@@ -203,8 +241,21 @@ def agent(state):
 
     mode = state["agent_mode"]
     print(f"fake agent: {mode}", flush=True)
+    listed = re.findall(r"(\S+/SKILL\.md)$", prompt, re.M)
+    reads = [
+        path
+        for path in listed
+        if "read" not in state or os.path.basename(os.path.dirname(path)) in state["read"]
+    ]
     for event in (
         {"type": "system", "subtype": "init", "model": "fake-model", "claude_code_version": "0.0.1"},
+        *(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": path}}]},
+            }
+            for path in reads + state.get("extra_reads", [])
+        ),
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
         {
             "type": "result",

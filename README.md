@@ -60,17 +60,17 @@ It is for routine changes with obvious, verifiable solutions, such as adding a f
 
 It clones the issue's repo under `~/.workshop/` and works there, so it can be run from any directory.
 
-Unless `--skills` names them, each run starts by choosing one job skill. A small model with no tools gets the issue and its comments, only what people with push access wrote, and each job skill's name and description. It chooses by the kind of work the issue asks for, or `other` if no skill is for it. The skill's own scope rules then decide whether the job goes ahead or asks. The run's comment names the skills it used.
+Unless `--skills` names them, the agent chooses its job skills. Its prompt gives every job skill's name, description and path, the target repo's own included, and it chooses by the kind of work the issue asks for, or `other` if no skill is for it. The skill's own scope rules then decide whether the job goes ahead or asks. The run's comment names the job skills the agent read, or `none`.
 
 The agent runs at `medium` effort. Each invocation's prompt includes its deadline, set by `--agent-timeout`.
 
 | Option | Default | |
 |---|---|---|
-| `--skills` | chosen | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own `.workshop/skills/<name>/SKILL.md`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`. A skill that only the target repo has is used only when named here. |
+| `--skills` | the agent chooses | For one issue. Comma-separated. The `workshop` skill is always included. A target repo's own skill in `.agents/skills/<name>/` or `.claude/skills/<name>/`, on its default branch, replaces workshop's skill of that name, chosen or named, except `workshop`; the `.agents` copy wins if both exist. A copy that `gh skill` installed from workshop's own repository is ignored, so workshop's skills always run as this repository has them. To use them in Claude Code or Codex directly, install them at user scope: `gh skill install <this repo> --all --scope user`. |
 | `--max-fix-attempts` | `2` | How many times the agent is sent back to fix failing checks. |
 | `--agent-timeout` | `900` | Seconds per agent run. |
 | `--checks-timeout` | `300` | Seconds to wait for checks, each round. |
-| `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, choosing the skill and fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
+| `--budget` | `10` | API-equivalent dollars for the agent in each issue's run, fix attempts included. Each agent run may spend what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. A run that spends it escalates. An agent run that times out reports no cost, so it is not counted. |
 
 Before editing, every job's agent decides what done is and finds a check that shows it, such as a test, a query or a command, that fails on the default branch. If there is none, it asks. The pull request gives the check's failing result before the change and its passing result after.
 
@@ -88,7 +88,7 @@ Before editing, every job's agent decides what done is and finds a check that sh
 
 The tool assesses the whole batch first, then prepares PRs one at a time, oldest first. It groups shared blockers, such as missing CI credentials, in one report. It checks intended behavior and trusted review feedback, merges the base when making a repair or resolving a conflict, and verifies GitHub checks. Clean PRs get no commits. When GitHub reports a branch is out of date, the report asks the owner to update it.
 
-The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with `.workshop/skills/prepare-pr/SKILL.md` on its default branch.
+The [`prepare-pr` skill](skills/prepare-pr/SKILL.md) handles preparation, including compatibility and lockfile checks when dependencies change. A target repo can replace it with its own `.agents/skills/prepare-pr/` or `.claude/skills/prepare-pr/` on its default branch.
 
 If the PR's commits, base, eligibility, title, description or trusted feedback change outside this run, preparation stops for that PR. Rerun to reassess it. Pushes refuse concurrent branch changes; only one `prepare` run per repo can run on a machine.
 
@@ -144,16 +144,19 @@ Use `--config PATH` to try a local configuration; repository context still comes
 
 `eval` runs the agent on each case in `evals/cases/` against a small test project in `evals/fixtures/`, without GitHub, and grades what it did. A case that should end in a pull request passes if the agent's committed change builds, preserves the baseline outside the case's permitted column changes, and returns the expected query results. The grader compares complete model outputs, including duplicate counts, column names and types, and existing test definitions. New fields are checked by key. Such a case can also require a `Kind:` line in the pull request, and a small model's judgment that the pull request does what the case says. A case that should end in a question passes if a small model judges that the question does what the case says. It publishes nothing, and prints a table of results.
 
+Each issue case gives the agent every job skill, as `run` does without `--skills`, and fails unless the agent read the case's skill; then it is graded as above. A case with `skills_only = true` gives only its own skills, to test a scope rule the agent would not reach from the full list.
+
+Evals are not part of CI, because each run costs real money. Run them when you change a skill or the prompt.
+
 Inspection cases provide made-up job histories, logs and repository context. They check the assessment's outcome, that repository files stay unchanged, and whether a small model judges its explanation and next step to meet the case's criterion. Run them with `./workshop.py eval --skill assess-failure`; they make no calls to external services for evidence.
 
-`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing, need no external dependency registry and are excluded from issue-routing evals.
+`./workshop.py eval --skill prepare-pr` checks feature repairs, dependency compatibility, lockfile conflicts, owner decisions and shared CI blockers, including failures early in long logs. The fixtures have local tests and a documented dependency resolver. The grader checks committed files and preserved history without executing agent-authored code outside its sandbox. The cases publish nothing and need no external dependency registry.
 
 | Option | Default | |
 |---|---|---|
 | `--skill` | all | Only the cases for this skill. |
 | `--case` | all | Only the named cases, by case file name without `.toml`, such as `add-fields-plan-tier`. Repeat it or separate names with commas. |
 | `--changed` | off | Only cases whose inputs differ from the branch point with `origin/HEAD`, including uncommitted and new files. Inputs are the case, fixture and skills; issue cases also use `workshop`. A change to any `workshop*.py` module selects every case. |
-| `--route` | off | Only choose each case's skill from its issue, as `run` does without `--skills`, and check that it is the case's skill, or the one its `route` names. No agent works the case, and no record is saved. |
 | `--runs` | `1` | Runs of each case. |
 | `--budget` | `5` | API-equivalent dollars for all the runs. Each run may spend an equal share of what is left, and stops at the end of the turn that goes over it, so the total can go slightly over. |
 | `--max-fix-attempts` | `1` | How many times the agent is sent back to fix a failing build. |
@@ -184,7 +187,6 @@ With Claude Code installed and logged in, run `WORKSHOP_TEST_CLAUDE=1 uv run pyt
 - For `prepare`, the tool supplies diffs, checks and failed logs. Only PRs from people with push access or the GitHub Dependabot account supply a diff. Titles, descriptions and feedback come from people with push access. The agent has no GitHub tools.
 - The tool posts what the agent wrote as you: its question, the pull request's title and body, and its closing comment. Anything the agent can read could end up there.
 - In `run` and the repair phase of `prepare`, the agent's commands run without prompts, always in Claude Code's sandbox: they can write only to the job's worktree, read nothing else in your home directory, and reach no network host. In `inspect` and batch preparation assessment, the agent has file-reading tools and can write only its assessment in the handoff directory; it has no shell. With `inspect --issue`, the tool fetches the target repo's issues for it and keeps only those written by people with push access.
-- To choose a job's skill, the tool gives a small model with no tools the issue and the comments written by people with push access.
 - A target repo lets its tools reach more with `sandbox.network.allowedDomains`, `sandbox.filesystem.allowRead` and `sandbox.filesystem.allowWrite` in its `.claude/settings.json` on the default branch. Its `permissions.deny` and `permissions.ask` rules apply too.
 - The agent gets only a few variables from the shell `run` starts in, such as `PATH` and `HOME`, so none of that shell's secrets. Variables the target repo's tools need go in the `env` key of the same file, and reach only the agent's commands.
 - Those tools use whatever credentials they can read, such as a warehouse login. Give those only the access jobs need, such as no writes to production.
@@ -222,7 +224,7 @@ Let a job end in a comment on the issue with no pull request, beside a question 
 
 ### Triage and follow-up issues
 
-Review issues, and flag missing information, prerequisites or work to split into separate issues. Choose several compatible skills for one change where one is not enough. The owner still chooses which issues to queue.
+Review issues, and flag missing information, prerequisites or work to split into separate issues. The owner still chooses which issues to queue.
 
 At the end of a job, let the agent hand off follow-up work for workshop to create as linked issues in the same or another relevant repository. Include the reason, a way to verify completion, suggested skills and any dependency on the original change. Reuse existing issues on reruns, and send follow-ups through triage before the owner queues them. Follow-ups that depend on the original change wait until that prerequisite is satisfied.
 

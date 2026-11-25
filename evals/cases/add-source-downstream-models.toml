@@ -1,6 +1,6 @@
 # The data is already loaded; changing downstream models belongs to a different job skill.
 skills = ["add-source"]
-route = "add-fields"  # the skill a run without --skills should choose
+skills_only = true  # from the full list, the agent would choose add-fields and never reach this scope rule
 fixture = "dbt-duckdb"
 expect = "question"
 question = "explain that the requested work changes downstream models rather than ingestion and offer to handle it with an appropriate skill or a person"

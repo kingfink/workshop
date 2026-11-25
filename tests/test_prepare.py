@@ -564,7 +564,7 @@ def test_batch_assesses_before_repairs_and_continues_after_failure(tmp_path, mon
     events = []
     candidates = [pr(12), pr(13)]
     monkeypatch.setattr(w, "prepare_worktree", lambda *a: "base")
-    monkeypatch.setattr(w, "copy_repo_skills", lambda *a: None)
+    monkeypatch.setattr(w, "copy_repo_skills", lambda *a: {})
     monkeypatch.setattr(w, "repo_settings", lambda *a: {})
     monkeypatch.setattr(w, "gh_json", lambda *a: {"login": "owner"})
     monkeypatch.setattr(
