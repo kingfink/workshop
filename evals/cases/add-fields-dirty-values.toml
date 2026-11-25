@@ -2,7 +2,7 @@
 skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
-question = "ask how to handle the mixed `is_vip` values, such as `Y`, `yes`, `1` and blanks"
+criterion = "ask how to handle the mixed `is_vip` values, such as `Y`, `yes`, `1` and blanks"
 
 [issue]
 title = "Add VIP flag to dim_customers"

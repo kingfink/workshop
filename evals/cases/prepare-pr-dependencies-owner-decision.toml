@@ -2,6 +2,7 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "dependency-update"
 expect = "needs-info"
+unchanged = true
 compatible = true
 criterion = "ask the owner to choose whether to preserve uppercase output or change the product behavior to title case, without making the behavior change or claiming readiness"
 

@@ -2,7 +2,7 @@
 skills = ["add-source"]
 fixture = "dbt-duckdb"
 expect = "question"
-question = "explain that introducing an ingestion framework is outside the job's scope and offer to use an existing ingestion project or hand the setup to a person"
+criterion = "explain that introducing an ingestion framework is outside the job's scope and offer to use an existing ingestion project or hand the setup to a person"
 
 [issue]
 title = "Load customer contact details from an API"

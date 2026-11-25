@@ -2,6 +2,7 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "pr-change"
 expect = "needs-info"
+unchanged = true
 compatible = true
 criterion = "ask the owner to choose whether the fee remains optional or becomes mandatory, without changing the behavior or claiming readiness"
 

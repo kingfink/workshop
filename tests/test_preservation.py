@@ -1,12 +1,19 @@
-"""Deliberately wrong outputs must fail even when the candidate's dbt build passes."""
+"""The dbt-duckdb fixture's check: deliberately wrong outputs must fail even when the candidate's dbt build passes."""
 
+import importlib.util
 import json
 from copy import deepcopy
 
 import pytest
 
 import workshop_eval
-from workshop_eval import preservation_error
+
+spec = importlib.util.spec_from_file_location(
+    "dbt_fixture", workshop_eval.EVALS_DIR / "fixtures/dbt-duckdb/fixture.py"
+)
+dbt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dbt)
+preservation_error = dbt.preservation_error
 
 
 @pytest.fixture
@@ -119,14 +126,45 @@ def test_snapshot_preserves_sql_tests_without_an_attached_column(tmp_path, monke
     manifest = target / "manifest.json"
     manifest.write_text(json.dumps({"nodes": {"test.fixture.ids": test}}))
     monkeypatch.setattr(
-        workshop_eval,
+        dbt,
         "query",
-        lambda fixture, project, sql: (
+        lambda cache, project, sql: (
             [["customers", "id", "INTEGER"]] if "information_schema" in sql else [[1]]
         ),
     )
-    before = workshop_eval.snapshot(None, tmp_path)
+    before = dbt.snapshot(None, tmp_path)
     test["raw_code"] = "select id from customers where false"
     manifest.write_text(json.dumps({"nodes": {"test.fixture.ids": test}}))
-    after = workshop_eval.snapshot(None, tmp_path)
+    after = dbt.snapshot(None, tmp_path)
     assert "unrelated test" in preservation_error(before, after, {})
+
+
+def test_check_grades_only_changes_to_models_and_their_results(tmp_path, monkeypatch, baseline):
+    """A failed build comes with its log, for the agent to fix. Query results must match row by row."""
+    project, cache = tmp_path / "graded", tmp_path / "cache"
+    (project / "models").mkdir(parents=True)
+    cache.mkdir()
+    (cache / "baseline.json").write_text(json.dumps(baseline))
+    workshop_eval.git("init", "--quiet", project)
+
+    def change(name):
+        (project / name).write_text("select 1\n")
+        workshop_eval.commit(project, name)
+        return workshop_eval.git("-C", project, "rev-parse", "HEAD").stdout.strip()
+
+    (tmp_path / "start.json").write_text(json.dumps({"main": change("models/start.sql")}))
+    case = {"queries": [{"sql": "select tier", "rows": [[1, "pro"], [2, "free"]]}]}
+    (tmp_path / "case.json").write_text(json.dumps(case))
+    change("models/tiers.sql")
+    monkeypatch.setattr(dbt, "build", lambda cache, project: (False, "Compilation Error"))
+    assert dbt.check(tmp_path, cache) == ("dbt build failed", "Compilation Error")
+    monkeypatch.setattr(dbt, "build", lambda cache, project: (True, ""))
+    monkeypatch.setattr(dbt, "snapshot", lambda cache, project: baseline)
+    monkeypatch.setattr(
+        dbt, "query", lambda cache, project, sql: [[1, "free"], [2, "pro"]]
+    )  # same distribution
+    assert dbt.check(tmp_path, cache)[0] == "`select tier` returned [[1, 'free'], [2, 'pro']]"
+    monkeypatch.setattr(dbt, "query", lambda cache, project, sql: case["queries"][0]["rows"])
+    assert dbt.check(tmp_path, cache) == ("", "")
+    change("dbt_project.yml")
+    assert dbt.check(tmp_path, cache)[0] == "changed files outside models/: dbt_project.yml"

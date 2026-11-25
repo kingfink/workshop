@@ -2,6 +2,7 @@
 skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
+checks = ["check"]
 
 [remove_columns]
 stg_customers = ["customer_name"]

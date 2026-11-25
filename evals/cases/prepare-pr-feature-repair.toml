@@ -2,6 +2,7 @@ kind = "preparation"
 skills = ["prepare-pr"]
 fixture = "pr-change"
 expect = "ready"
+checks = ["check"]
 # The grader checks the default argument's behavior and preservation of existing tests from the commit.
 criterion = "describe reproducing the fee calculation failure, fixing the fee to be added to the total, and rerunning the tests successfully"
 

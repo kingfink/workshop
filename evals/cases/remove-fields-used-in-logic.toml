@@ -2,7 +2,7 @@
 skills = ["remove-fields"]
 fixture = "dbt-duckdb"
 expect = "question"
-question = "point out that `lifetime_value` in `dim_customers` is calculated from `amount`"
+criterion = "point out that `lifetime_value` in `dim_customers` is calculated from `amount`"
 
 [issue]
 title = "Remove amount from stg_orders"

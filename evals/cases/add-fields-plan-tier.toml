@@ -2,6 +2,7 @@
 skills = ["add-fields"]
 fixture = "dbt-duckdb"
 expect = "pull-request"
+checks = ["check"]
 
 [add_columns]
 stg_customers = { plan_tier = "VARCHAR" }
