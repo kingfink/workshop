@@ -21,3 +21,31 @@ jobs:
       - run: uv run --locked ruff check --output-format=github .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked python -m pytest -q
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: modal
+    concurrency:
+      group: modal-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Deploy current master to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          if [[ "$(git ls-remote origin refs/heads/master | cut -f1)" != "$GITHUB_SHA" ]]; then
+            echo "Skipping deployment: master has advanced."
+            exit 0
+          fi
+          uv run --locked modal deploy --env workshop --tag "$GITHUB_SHA" workshop_modal.py
