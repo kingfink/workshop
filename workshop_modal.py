@@ -42,7 +42,7 @@ AGENT_IMAGE = (
 # of the job branch. Files setup.sh left that git ignores stay; other untracked files go.
 ENTER = r"""set -euo pipefail
 packed=$1 root=$2 worktree=$3 branch=$4 default=$5 repo=$6
-tar -xpf "$packed" -C "$root"
+tar --no-same-owner -xpf "$packed" -C "$root"  # owned by the Sandbox's user, so commands can write the handoff
 mkdir -p "$worktree" && cd "$worktree"
 git init -q
 git fetch -q "$root/tmp/workshop/in.bundle" "+refs/heads/$branch:refs/heads/$branch" \
