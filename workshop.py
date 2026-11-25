@@ -994,7 +994,12 @@ def wait_for_checks(repo: str, pr: int, timeout_s: int, head: str = "", previous
     start = time.monotonic()
     head_seen = False
     while True:
-        observed_head, checks = pr_checks(repo, pr)
+        try:
+            observed_head, checks = pr_checks(repo, pr)
+        except ToolError as exc:
+            if "Resource not accessible by personal access token" not in str(exc):
+                raise
+            return {"status": "unverified", "reason": "checks-inaccessible", "head_sha": head, "checks": []}
         head = head or observed_head
         result = {"status": "unverified", "reason": "", "head_sha": head, "checks": checks}
         if observed_head != head:
@@ -1101,6 +1106,14 @@ def prove(job: Job, pr: dict) -> Outcome:
         job.validation = wait_for_checks(job.repo, pr["number"], job.args.checks_timeout, job.pushed)
         job.checks_s += time.monotonic() - started
         state, reason = job.validation["status"], job.validation["reason"]
+        if reason == "checks-inaccessible":
+            return Outcome(
+                "escalated",
+                "the GitHub token cannot read CI checks; review the pull request's checks on GitHub",
+                pr["url"],
+                attempts,
+                handoff_text(job, "comment.md"),
+            )
         if state == "passed" or reason in ("no-checks", "all-skipped"):
             reason = {
                 "reported-checks-passed": "reported checks passed",

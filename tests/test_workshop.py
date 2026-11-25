@@ -413,6 +413,40 @@ def test_check_end_states(fake, checks, options, outcome, reason, validation):
     assert f"GitHub checks: {validation} at `" in fake.summaries()[0]
 
 
+def test_inaccessible_private_checks_escalate_once_and_wait_for_the_owner(fake, monkeypatch):
+    def denied(*args):
+        raise workshop.ToolError(
+            "GraphQL: Resource not accessible by personal access token "
+            "(repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)"
+        )
+
+    monkeypatch.setattr(workshop, "pr_checks", denied)
+    assert fake.outcome(*RUN) == "escalated"
+    assert fake.labels == {"workshop:waiting"}
+    assert len(fake.state["agent_runs"]) == 1
+    assert len(fake.state["prs"]) == 1
+    assert workshop.wait_for_checks("acme/analytics", 100, 0, "pushed") == {
+        "status": "unverified",
+        "reason": "checks-inaccessible",
+        "head_sha": "pushed",
+        "checks": [],
+    }
+    assert "GitHub checks: unverified at `" in fake.summaries()[0]
+    assert "cannot read CI checks" in fake.summaries()[0]
+    assert fake.run("run", "acme/analytics") == 0
+    assert len(fake.state["agent_runs"]) == 1
+    assert len(fake.summaries()) == 1
+
+
+def test_other_check_errors_still_fail(monkeypatch):
+    def failed(*args):
+        raise workshop.ToolError("GitHub is unavailable")
+
+    monkeypatch.setattr(workshop, "pr_checks", failed)
+    with pytest.raises(workshop.ToolError, match="GitHub is unavailable"):
+        workshop.wait_for_checks("acme/analytics", 12, 0, "head")
+
+
 def test_agent_timeout(fake):
     fake.set(agent_mode="sleep")
     assert fake.outcome(*RUN, "--agent-timeout", "1") == "escalated"

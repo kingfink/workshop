@@ -194,6 +194,8 @@ To set it up:
 3. Create a Modal secret named `workshop` holding `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `WORKSHOP_REPOS`, a comma-separated list such as `acme/analytics,acme/web`. To send traces to PostHog, add `WORKSHOP_POSTHOG_TOKEN` and `WORKSHOP_POSTHOG_HOST`.
 4. Log in to Modal with `uv run modal setup`, then deploy with `uv run modal deploy workshop_modal.py`. Run it once now with `uv run modal run workshop_modal.py::work_queue`.
 
+Fine-grained personal tokens cannot read private repositories' CI checks. For those PRs, Workshop records CI as unverified, comments that the checks need your review on GitHub, and leaves the issue waiting. It does not attempt CI repairs or retry the issue until you reply or queue it again. Public repositories keep the normal check and repair flow.
+
 `uv run ./workshop.py run '<owner>/<repo>#<issue>' --modal` runs one job from your machine with the agent on Modal. It needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` in your environment.
 
 ## Development
