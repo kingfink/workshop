@@ -180,17 +180,19 @@ The tool runs in a Modal function with your GitHub token. It does every clone, p
 
 - The working copy goes into the Sandbox as a git bundle, and the job branch's commits come back the same way. The token stays with the tool.
 - The agent has no GitHub tools. The tool puts the issue and its comments in the prompt, and keeps only what people with push access wrote. `update-docs`, which reads other issues and pull requests, needs to run on your machine.
-- If the default branch has `.workshop/setup.sh`, it runs in that commit's files, with the network open, while the Sandbox's image is built. Install the tools that jobs need there. Modal reuses the image while the commit is the same.
+- If the default branch has `.workshop/setup.sh`, it runs in that commit's files, with the network open, while the Sandbox's image is built. Install the tools that jobs need there, somewhere on the image's `PATH` such as `/usr/local/bin`. It runs at the worktree's path, which names the issue, so each issue builds its own image. Fix attempts reuse it.
+- Commands get no files from your machine, so the target repo's file-based credentials, such as a dbt profile under `allowRead`, aren't there. Its Modal secret, below, takes their place.
+- Changes the agent didn't commit stay in the Sandbox, which is deleted when each agent run ends.
 - The Sandbox can reach Anthropic's API, the PostHog host if you set one, and the target repo's `sandbox.network.allowedDomains`.
-- If a Modal secret named `workshop-<owner>-<repo>`, such as `workshop-acme-analytics`, exists, its values reach the agent's commands. That is where the target repo's own credentials go.
+- If a Modal secret named `workshop-<owner>--<repo>` in lowercase, such as `workshop-acme--analytics`, exists, its values reach the agent's commands. That is where the target repo's own credentials go.
 - Transcripts and `runs.jsonl` go on the Modal volume `workshop-logs`. The clones and worktrees last only for the run.
 
 To set it up:
 
-1. Create a fine-grained GitHub token for the target repos. Give it read and write access to contents, issues and pull requests, and read access to actions and commit statuses.
+1. Create a fine-grained GitHub token for the target repos. Give it read and write access to contents, issues and pull requests, and read access to actions and commit statuses. Add write access to workflows if jobs may change `.github/workflows/`.
 2. Run `claude setup-token` for a Claude login that lasts a year.
 3. Create a Modal secret named `workshop` holding `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `WORKSHOP_REPOS`, a comma-separated list such as `acme/analytics,acme/web`. To send traces to PostHog, add `WORKSHOP_POSTHOG_TOKEN` and `WORKSHOP_POSTHOG_HOST`.
-4. Deploy it with `uv run modal deploy workshop_modal.py`. Run it once now with `uv run modal run workshop_modal.py::work_queue`.
+4. Log in to Modal with `uv run modal setup`, then deploy with `uv run modal deploy workshop_modal.py`. Run it once now with `uv run modal run workshop_modal.py::work_queue`.
 
 `uv run ./workshop.py run '<owner>/<repo>#<issue>' --modal` runs one job from your machine with the agent on Modal. It needs `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` in your environment.
 

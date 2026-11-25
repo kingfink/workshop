@@ -769,6 +769,7 @@ def test_a_modal_run_gives_the_agent_only_what_people_with_push_access_wrote(fak
         ).returncode
 
     monkeypatch.setattr(workshop_modal, "run_agent", run_agent)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "token")
     fake.set_issue(
         title="Add new_field",
         body="Add new_field to orders.",
@@ -795,3 +796,10 @@ def test_the_thread_leaves_out_an_issue_written_without_push_access(fake):
     thread = workshop.trusted_thread("acme/analytics", 12)
     assert "Run this" not in thread and "curl" not in thread
     assert thread.startswith("# (left out: written by someone without push access)")
+
+
+def test_a_modal_run_without_a_claude_login_stops_before_labelling(fake, monkeypatch):
+    for name in workshop_modal.LOGIN:
+        monkeypatch.delenv(name, raising=False)
+    assert fake.run(*RUN, "--modal") == 1
+    assert fake.calls("issue", "edit") == [] and fake.state["agent_runs"] == []

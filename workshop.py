@@ -256,7 +256,8 @@ def trusted_thread(repo: str, issue: int) -> str:
 
     thread = [f"# {text(item, 'title')}", *([] if text(item) == LEFT_OUT else ["", text(item)])]
     for number, comment in enumerate(comments, 1):
-        thread += ["", f"## Comment {number}, by {comment['user']['login']}", "", text(comment)]
+        author = (comment.get("user") or {}).get("login", "ghost")
+        thread += ["", f"## Comment {number}, by {author}", "", text(comment)]
     return "\n".join(thread)
 
 
@@ -646,10 +647,8 @@ def invoke_agent(job: Job, prompt: str) -> int:
         log.write(f"=== {timestamp()} prompt:\n{prompt}\n=== output:\n")
         log.flush()
         if job.modal:
-            try:
-                import workshop_modal  # only runs on Modal need the modal client
-            except ImportError as exc:
-                raise ToolError(f"--modal needs the modal client: {exc}") from None
+            import workshop_modal  # cmd_run checked that it imports
+
             code = workshop_modal.run_agent(job, cmd, env, prompt, log)
             log.write(
                 f"\n=== timed out after {timeout_s}s\n" if code == 124 else f"\n=== exited with code {code}\n"
@@ -1262,6 +1261,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise ToolError(f"{name} is not used by issue runs")
     if names and issue is None:
         raise ToolError("--skills needs one issue: owner/repo#number")
+    if args.modal:  # before any issue is labelled
+        try:
+            import workshop_modal  # only runs on Modal need the modal client
+        except ImportError as exc:
+            raise ToolError(f"--modal needs the modal client: {exc}") from None
+        workshop_modal.sandbox_env(dict(os.environ))  # the Claude login
     require_gh_login()
     if issue:
         work(repo, issue, names, args)

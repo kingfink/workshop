@@ -82,6 +82,7 @@ def test_the_working_copy_goes_in_and_comes_back_without_the_token(job, tmp_path
     assert real_git("-C", inside, "rev-parse", "origin/HEAD") == job.base
     assert real_git("-C", inside, "symbolic-ref", "--short", "HEAD") == BRANCH
     assert not [path for path in root.rglob("*") if path.is_file() and b"SECRET" in path.read_bytes()]
+    assert not any((root / str(job.clone / ".git").lstrip("/")).iterdir())
     sandbox_home = root / str(Path.home()).lstrip("/")
     assert (root / str(job.skills[0]).lstrip("/")).read_text() == job.skills[0].read_text()
     assert (root / str(job.log_path.parent / "env.sh").lstrip("/")).read_text() == "export DBT_TARGET=dev\n"
@@ -104,21 +105,27 @@ def test_the_working_copy_goes_in_and_comes_back_without_the_token(job, tmp_path
     assert real_git("-C", job.clone, "rev-parse", f"refs/heads/{BRANCH}") == real_git(
         "-C", inside, "rev-parse", "HEAD"
     )
-    assert (job.worktree / "orders.sql").read_text() == "select 1\n"
+    assert real_git("-C", job.clone, "show", f"{BRANCH}:orders.sql") == "select 1"
     assert (job.handoff / "pull-request.md").read_text() == "Add orders\n\nKind: add fields\n"
 
 
-def test_a_handoff_that_links_out_is_refused(job, tmp_path):
+@pytest.mark.parametrize(
+    "name, kind",
+    [("question.md", tarfile.SYMTYPE), ("../question.md", tarfile.REGTYPE), ("/question.md", tarfile.REGTYPE),
+     ("notes/question.md", tarfile.REGTYPE), ("question.md", tarfile.LNKTYPE)],
+)  # fmt: skip
+def test_a_handoff_of_anything_but_plain_files_is_refused(job, tmp_path, name, kind):
     out = tmp_path / "out"
     out.mkdir()
     real_git("-C", job.clone, "bundle", "create", "-q", out / "work.bundle", f"refs/heads/{BRANCH}")
     with tarfile.open(out / "handoff.tar", "w") as tar:
-        link = tarfile.TarInfo("question.md")
-        link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
-        tar.addfile(link)
+        tar.addfile(tarfile.TarInfo("."))  # what `tar -C handoff .` writes first
+        member = tarfile.TarInfo(name)
+        member.type, member.linkname = kind, "/etc/passwd"
+        tar.addfile(member, io.BytesIO(b"") if kind == tarfile.REGTYPE else None)
     with pytest.raises(workshop.ToolError, match="handoff"):
         workshop_modal.bring_back(job, out)
-    assert not (job.handoff / "question.md").exists()
+    assert not list(job.handoff.iterdir()) and not (tmp_path / "question.md").exists()
 
 
 def test_only_the_claude_process_gets_the_login(monkeypatch):
@@ -215,17 +222,35 @@ def test_the_agent_runs_in_a_vm_sandbox_that_is_always_terminated(job, tmp_path,
 
 
 @pytest.mark.filterwarnings("ignore:The work_queue function is executing locally")
-def test_the_schedule_runs_each_configured_repo_on_modal(monkeypatch):
-    runs, commits = [], []
+@pytest.mark.parametrize("first", [0, 1, RuntimeError("a Modal stream broke"), 130])
+def test_the_schedule_runs_each_configured_repo_on_modal(monkeypatch, first):
+    runs, gh, commits = [], [], []
+
+    def main(argv):
+        runs.append(argv)
+        if isinstance(first, Exception) and len(runs) == 1:
+            raise first
+        return first if len(runs) == 1 else 0
+
     monkeypatch.setenv("WORKSHOP_REPOS", "acme/analytics, acme/web,")
-    monkeypatch.setattr(workshop, "main", lambda argv: runs.append(argv) or 0)
-    monkeypatch.setattr(workshop, "sh", lambda *args, **kwargs: None)
+    monkeypatch.setattr(workshop, "main", main)
+    monkeypatch.setattr(workshop, "gh", lambda *args, **kwargs: gh.append(args))
     monkeypatch.setattr(
         workshop_modal, "logs", type("Volume", (), {"commit": lambda self: commits.append(1)})()
     )
-    workshop_modal.work_queue.local()
-    assert runs == [["run", "acme/analytics", "--modal"], ["run", "acme/web", "--modal"]]
-    assert commits == [1]
+    if first == 0:
+        workshop_modal.work_queue.local()
+    else:
+        with pytest.raises(Exception, match="acme/analytics"):
+            workshop_modal.work_queue.local()
+    assert gh == [("auth", "setup-git")] and commits == [1]
+    web = [["run", "acme/web", "--modal"]]
+    assert runs == [["run", "acme/analytics", "--modal"], *([] if first == 130 else web)]
+
+
+def test_repo_secret_names_do_not_collide():
+    assert workshop_modal.repo_secret("Acme/Analytics") == "workshop-acme--analytics"
+    assert workshop_modal.repo_secret("acme-foo/bar") != workshop_modal.repo_secret("acme/foo-bar")
 
 
 def test_a_modal_error_is_a_tool_error_so_the_issue_is_queued_again(job, monkeypatch):
@@ -246,6 +271,7 @@ def test_setup_sh_runs_in_the_default_branchs_files_at_the_worktrees_path(job, t
     origin = tmp_path / "origin"
     (origin / ".workshop").mkdir()
     (origin / ".workshop" / "setup.sh").write_text("uv sync --frozen\n")
+    (origin / "modal.toml").symlink_to(Path.home() / ".modal.toml")  # on the tool's machine, a secret
     real_git("add", ".", cwd=origin)
     real_git("commit", "-q", "-m", "Add setup.sh", cwd=origin)
     real_git("-C", job.clone, "fetch", "-q", origin, "main")
@@ -254,3 +280,4 @@ def test_setup_sh_runs_in_the_default_branchs_files_at_the_worktrees_path(job, t
     image = workshop_modal.agent_image(job, tmp_path / "build")
     assert image is not workshop_modal.AGENT_IMAGE
     assert (tmp_path / "build" / "default" / ".workshop" / "setup.sh").read_text() == "uv sync --frozen\n"
+    assert not (tmp_path / "build" / "default" / "modal.toml").is_symlink()

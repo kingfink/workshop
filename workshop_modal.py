@@ -23,6 +23,7 @@ CLAUDE_CODE = "2.1.332"  # the version checked in a Modal Sandbox
 SETUP = ".workshop/setup.sh"  # on the target repo's default branch
 INSIDE = "/tmp/workshop"  # in the Sandbox: the bundles and tars that carry the job in and out
 LOGIN = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+HANDOFF_BYTES = 1_000_000  # for each file the agent leaves
 MACHINE = (
     "PATH",
     "SHELL",
@@ -92,23 +93,40 @@ def pack(job: w.Job, into: Path) -> Path:
         tar.add(job.handoff, arcname(job.handoff))
         for folder in dict.fromkeys(path.parent for path in job.skills):
             tar.add(folder, arcname(folder))
+        git_dir = tarfile.TarInfo(arcname(job.clone / ".git"))  # empty: the agent's settings name it
+        git_dir.type, git_dir.mode = tarfile.DIRTYPE, 0o755
+        tar.addfile(git_dir)
     return packed
 
 
 def bring_back(job: w.Job, out: Path) -> None:
-    """Take the job branch and the handoff directory from what LEAVE made. The worktree takes the branch's commit,
-    as if the agent had committed here. The handoff is unpacked as data: no links out, no absolute paths."""
-    w.git("-C", job.worktree, "fetch", "-q", out / "work.bundle", f"refs/heads/{job.branch}")
-    w.git("-C", job.worktree, "reset", "-q", "--hard", "FETCH_HEAD")
-    shutil.rmtree(job.handoff)
+    """Take the job branch and the handoff directory from what LEAVE made, both written by the agent. Only the job
+    branch is fetched, and it is not checked out here, so none of its files run a git filter outside the sandbox.
+    The handoff keeps only plain files at its top level, written by name, so nothing lands outside it."""
+    w.git(
+        "-C",
+        job.worktree,
+        "-c",
+        "transfer.fsckObjects=true",
+        "fetch",
+        "-q",
+        out / "work.bundle",
+        f"refs/heads/{job.branch}",
+    )
+    w.git("-C", job.worktree, "update-ref", f"refs/heads/{job.branch}", "FETCH_HEAD")
+    shutil.rmtree(job.handoff)  # the earlier handoff, which the Sandbox had too
     job.handoff.mkdir()
-    try:
-        with tarfile.open(out / "handoff.tar") as tar:
-            tar.extractall(job.handoff, filter="data")
-    except tarfile.TarError as exc:
-        shutil.rmtree(job.handoff)
-        job.handoff.mkdir()
-        raise w.ToolError(f"the agent's handoff directory could not be unpacked: {exc}") from None
+    files = {}
+    with tarfile.open(out / "handoff.tar") as tar:
+        for member in tar:
+            name = member.name.removeprefix("./")
+            if name in ("", "."):
+                continue
+            if not member.isreg() or "/" in name or name == ".." or member.size > HANDOFF_BYTES:
+                raise w.ToolError(f"the agent's handoff directory holds more than plain files: {member.name}")
+            files[name] = tar.extractfile(member).read()
+    for name, data in files.items():  # all or nothing
+        (job.handoff / name).write_bytes(data)
 
 
 def sandbox_env(env: dict[str, str]) -> dict[str, str]:
@@ -129,10 +147,16 @@ def allowed_hosts(job: w.Job) -> list[str]:
     return list(dict.fromkeys(["api.anthropic.com", *([posthog] if posthog else []), *domains]))
 
 
+def repo_secret(repo: str) -> str:
+    """The name of a target repo's own Modal secret: workshop-<owner>--<repo>, in lowercase. GitHub names never have
+    "--" in an owner, so no two repos share one."""
+    return "workshop-" + repo.lower().replace("/", "--", 1)
+
+
 def repo_secrets(job: w.Job) -> list[modal.Secret]:
-    """The target repo's own Modal secret, workshop-<owner>-<repo>, if the owner made one. Its values reach commands,
-    as the repo's own credentials do on the owner's machine."""
-    secret = modal.Secret.from_name(f"workshop-{job.repo.replace('/', '-').lower()}")
+    """The target repo's own Modal secret, if the owner made one. Its values reach commands, as the repo's own
+    credentials do on the owner's machine."""
+    secret = modal.Secret.from_name(repo_secret(job.repo))
     try:
         secret.hydrate()
     except modal.exception.NotFoundError:
@@ -142,15 +166,19 @@ def repo_secrets(job: w.Job) -> list[modal.Secret]:
 
 def agent_image(job: w.Job, tmp: Path) -> modal.Image:
     """AGENT_IMAGE, then, if the default branch has .workshop/setup.sh, that commit's files at the worktree's path
-    with setup.sh run there, with the network open. Modal reuses the build while the commit and path are the same."""
+    with setup.sh run there, with the agent's HOME and the network open. Modal reuses the build while the commit and
+    path are the same, as on a fix attempt. Links are left out: Modal would upload what they point to on this
+    machine. The worktree gets them back from git."""
     if w.git("-C", job.clone, "cat-file", "-e", f"{job.base}:{SETUP}", check=False).returncode:
         return AGENT_IMAGE
     w.git("-C", job.clone, "archive", "--output", tmp / "default.tar", job.base)
     with tarfile.open(tmp / "default.tar") as tar:
-        tar.extractall(tmp / "default", filter="tar")
-    worktree = shlex.quote(str(job.worktree))
+        tar.extractall(
+            tmp / "default", filter=lambda member, path: None if member.issym() or member.islnk() else member
+        )
+    worktree, home = shlex.quote(str(job.worktree)), shlex.quote(str(Path.home()))
     return AGENT_IMAGE.add_local_dir(tmp / "default", str(job.worktree), copy=True).run_commands(
-        f"cd {worktree} && bash {SETUP}"
+        f"mkdir -p {home} && cd {worktree} && HOME={home} bash {SETUP}"
     )
 
 
@@ -190,7 +218,7 @@ def in_sandbox(job: w.Job, cmd: list[str], env: dict[str, str], prompt: str, log
         where = (job.worktree, job.branch)
         sandbox_script(sandbox, ENTER, f"{INSIDE}/in.tar", "/", *where, remote_head(job), job.repo)
         agent = sandbox.exec(
-            "bash", "-c", 'exec timeout -k 30 "$@" 2>&1', "timeout", str(timeout_s), *cmd,
+            "bash", "-c", 'exec timeout "$@" 2>&1', "timeout", str(timeout_s), *cmd,
             workdir=str(job.worktree), env=env,
         )  # fmt: skip
         agent.stdin.write(prompt)
@@ -240,6 +268,7 @@ TOOL_IMAGE = (
 
 @app.function(
     image=TOOL_IMAGE,
+    nonpreemptible=True,  # a preempted run could leave an issue labelled workshop:working
     schedule=modal.Cron("0 * * * *"),
     secrets=[modal.Secret.from_name("workshop")],  # GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, WORKSHOP_REPOS
     volumes={"/root/.workshop/logs": logs},
@@ -247,10 +276,22 @@ TOOL_IMAGE = (
     max_containers=1,  # one run at a time: a late run waits for the one before
 )
 def work_queue() -> None:
-    """Work each configured repo's queued issues, as `./workshop.py run <owner>/<repo> --modal` does."""
-    w.sh("gh", "auth", "setup-git")  # git pushes with GH_TOKEN, through gh
+    """Work each configured repo's queued issues, as `./workshop.py run <owner>/<repo> --modal` does. One repo's
+    failure leaves the others to run, and fails the function at the end, so Modal shows it."""
+    w.gh("auth", "setup-git")  # git pushes with GH_TOKEN, through gh
+    failed = []
     try:
         for repo in filter(None, (name.strip() for name in os.environ["WORKSHOP_REPOS"].split(","))):
-            w.main(["run", repo, "--modal"])
+            try:
+                code = w.main(["run", repo, "--modal"])
+            except Exception as exc:  # not a ToolError: main handles those
+                w.status(f"error: {repo}: {exc!r}")
+                code = 1
+            if code:
+                failed.append(repo)
+            if code == 130:  # interrupted, as when Modal stops the function
+                break
     finally:
         logs.commit()
+    if failed:
+        raise RuntimeError(f"runs failed in {', '.join(failed)}")
